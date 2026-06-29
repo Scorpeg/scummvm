@@ -925,7 +925,6 @@ void PhoenixVREngine::playMovie(const Common::String &movie) {
 		return;
 	}
 
-	_mixer->pauseAll(true);
 	_system->lockMouse(false);
 	dec->start();
 
@@ -974,7 +973,6 @@ void PhoenixVREngine::playMovie(const Common::String &movie) {
 	if (subtitles)
 		g_system->hideOverlay();
 	_system->lockMouse(_vr.isVR());
-	_mixer->pauseAll(false);
 }
 
 void PhoenixVREngine::playAnimation(const Common::String &name, const Common::String &var, int varValue, float speed) {
