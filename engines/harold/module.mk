@@ -16,6 +16,8 @@ MODULE_OBJS := \
 	bcb/executable_data.o \
 	bcb/static_data.o \
 	bcb/translation.o \
+	bcb/translation_images.o \
+	bcb/text_renderer.o \
 	bcb/options.o \
 	metaengine.o
 
