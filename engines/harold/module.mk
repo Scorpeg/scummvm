@@ -16,6 +16,7 @@ MODULE_OBJS := \
 	bcb/executable_data.o \
 	bcb/static_data.o \
 	bcb/translation.o \
+	bcb/options.o \
 	metaengine.o
 
 MODULE_DIRS += \
