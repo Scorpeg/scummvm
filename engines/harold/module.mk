@@ -15,7 +15,9 @@ MODULE_OBJS := \
 	bcb/screens.o \
 	bcb/script.o \
 	bcb/static_data.o \
+	bcb/text_renderer.o \
 	bcb/translation.o \
+	bcb/translation_images.o \
 	bcb/video.o \
 	metaengine.o
 
