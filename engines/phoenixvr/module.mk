@@ -8,11 +8,14 @@ MODULE_OBJS = \
 	commands_v2.o \
 	game_state.o \
 	console.o \
+	cube.o \
 	metaengine.o \
 	pakf.o \
 	phoenixvr.o \
 	rectf.o \
 	region_set.o \
+	renderer.o \
+	renderer_opengl.o \
 	script.o \
 	script_v1.o \
 	script_v2.o \

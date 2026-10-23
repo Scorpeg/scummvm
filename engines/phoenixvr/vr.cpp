@@ -22,6 +22,7 @@
 #include "phoenixvr/vr.h"
 #include "common/array.h"
 #include "common/bitstream.h"
+#include "common/config-manager.h"
 #include "common/debug.h"
 #include "common/system.h"
 #include "common/textconsole.h"
@@ -33,6 +34,9 @@
 #include "phoenixvr/dct_tables.h"
 #include "phoenixvr/phoenixvr.h"
 #include "phoenixvr/region_set.h"
+#include "phoenixvr/region_outline.h"
+#include "phoenixvr/scene_decoder.h"
+#include "phoenixvr/renderer.h"
 #include "video/4xm_utils.h"
 
 namespace PhoenixVR {
@@ -71,17 +75,6 @@ constexpr int kVRImageHeight = kVRTileSize * kVRTilesPerFace * kVRCubeFaceCount;
 template<typename T>
 T clip(T a) {
 	return a >= 0 ? a <= 255 ? a : 255 : 0;
-}
-
-unsigned reverseBits(unsigned value, unsigned n) {
-	unsigned r = 0;
-	while (n--) {
-		r <<= 1;
-		if (value & 1)
-			r |= 1;
-		value >>= 1;
-	}
-	return r;
 }
 
 uint32 YCbCr2RGB(const Graphics::PixelFormat &format, int16 y, int16 cb, int16 cr) {
@@ -220,21 +213,22 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 	Quantisation quant(quality);
 
 	uint huffOffset = 0;
-	auto huffDecoder = Video::FourXM::loadStatistics<Common::Huffman<Common::BitStreamMemory8MSB>>(huff, huffOffset);
+	auto huffDecoder = Video::FourXM::loadStatistics<Common::Huffman<SceneDecoder::Bits>>(huff, huffOffset);
 	Common::BitStreamMemoryStream huffMs(huff + huffOffset, huffSize - huffOffset);
-	Common::BitStreamMemory8MSB huffBs(&huffMs);
+	SceneDecoder::Bits huffBs(&huffMs);
 
 	Common::BitStreamMemoryStream acMs(acPtr, acSize);
 	Common::BitStreamMemoryStream dcMs(dcPtr, dcSize);
-	Common::BitStreamMemory8MSB acBs(&acMs), dcBs(&dcMs);
+	SceneDecoder::Bits acBs(&acMs), dcBs(&dcMs);
 
 	auto decodeBlock = [&](int16 block[3][64]) {
 		Common::fill(&block[0][0], &block[0][0] + 3 * 64, 0);
 		for (unsigned channel = 0; channel != 3; ++channel) {
 			int16 *ac = block[channel];
-			int8 dc8 = static_cast<int8>(reverseBits(dcBs.getBits<8>(), 8));
+			int8 dc8 = static_cast<int8>(SceneDecoder::reverseBits(dcBs.getBits<8>(), 8));
 			auto *iquant = channel ? quant.quantCbCr : quant.quantY;
 			ac[0] = iquant[0] * dc8;
+			bool hasAC = false;
 			for (uint idx = 1; idx < 64;) {
 				auto b = huffDecoder.getSymbol(huffBs);
 				assert(b < 0x100);
@@ -248,14 +242,15 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					idx += h;
 					if (l && idx < 64) {
 						auto ac_idx = ZIGZAG[idx];
-						auto k = Video::FourXM::readInt(reverseBits(acBs.getBits(l), l), l);
+						auto k = Video::FourXM::readInt(SceneDecoder::reverseBits(acBs.getBits(l), l), l);
 						ac[ac_idx] = iquant[ac_idx] * k;
+						hasAC |= ac[ac_idx] != 0;
 						++idx;
 					}
 				}
 			}
 
-			Video::FourXM::idct(ac, 4);
+			SceneDecoder::idct(ac, hasAC);
 		}
 	};
 
@@ -565,6 +560,7 @@ void VR::playAnimation(const Common::String &name, const Common::String &variabl
 	animation.variable = variable;
 	animation.variableValue = value;
 	animation.renderNextFrame(*_pic->surfacePtr());
+	_gpuDirty = true;
 	if (animation.speed == 0)
 		g_engine->setVariable(variable, value);
 }
@@ -603,21 +599,24 @@ void VR::Animation::renderNextFrame(Graphics::Surface &pic) {
 	}
 }
 
-void VR::Animation::render(Graphics::Surface &pic, float dt) {
+bool VR::Animation::render(Graphics::Surface &pic, float dt) {
 	if (!active)
-		return;
+		return false;
 
 	t += speed * dt;
 	if (t >= 1) {
 		t = fmodf(t, 1);
 		renderNextFrame(pic);
+		return true;
 	}
+	return false;
 }
 
 template<typename ColorType>
-void VR::renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float dt, RegionSet *regSet) {
-	auto w = g_system->getWidth();
-	auto h = g_system->getHeight();
+void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, RegionSet *regSet) {
+	auto *screen = &renderer->softwareSurface();
+	auto w = screen->w;
+	auto h = screen->h;
 
 	// camera pose
 	using namespace Math;
@@ -634,15 +633,6 @@ void VR::renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float
 	Vector3d incrementX = right * (2 * gx / w);
 	Vector3d incrementY = up * (2 * gy / h);
 	Vector3d start = forward - right * gx - up * gy;
-	Vector3d line = start;
-	float regX = 0, regY = 0, regDX = 0, regDY = 0;
-	if (regSet) {
-		regY = ay - fov / 2;
-		regDX = fov / w;
-		regDY = fov / h;
-		if (regY < 0)
-			regY += kTau;
-	}
 	float hint = 0;
 	if (regSet) {
 		hint = fmod(_hint + dt * kTau, kTau);
@@ -652,6 +642,66 @@ void VR::renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float
 	if (_showWaves)
 		_wavesT += dt * 20;
 
+	const Graphics::PixelFormat rgb565(2, 5, 6, 5, 0, 11, 5, 0, 0);
+#ifdef SCUMM_LITTLE_ENDIAN
+	const Graphics::PixelFormat rgba(4, 8, 8, 8, 8, 0, 8, 16, 24);
+	const Graphics::PixelFormat bgra(4, 8, 8, 8, 8, 16, 8, 0, 24);
+#else
+	const Graphics::PixelFormat rgba(4, 8, 8, 8, 8, 24, 16, 8, 0);
+	const Graphics::PixelFormat bgra(4, 8, 8, 8, 8, 8, 16, 24, 0);
+#endif
+	if (renderer->supportsCube() && (_pic->format == rgb565 || _pic->format == rgba || _pic->format == bgra) &&
+		(screen->format == rgb565 || screen->format == rgba || screen->format == bgra)) {
+		CubeRequest request = {};
+		request.source = _pic->getPixels();
+		request.sourcePitch = _pic->pitch;
+		request.sourceWidth = _pic->w;
+		request.sourceHeight = _pic->h;
+		request.sourceBpp = _pic->format.bytesPerPixel;
+		request.sourceBgra = _pic->format == bgra;
+		request.width = w;
+		request.height = h;
+		request.version2 = _v2;
+		request.ignoreRightPixel = _ignoreRightPixel;
+		request.dirty = _gpuDirty;
+		request.linear = ConfMan.getBool("filtering");
+		for (unsigned i = 0; i < 3; ++i) {
+			request.origin[i] = start.getData()[i];
+			request.stepX[i] = incrementX.getData()[i];
+			request.stepY[i] = incrementY.getData()[i];
+		}
+		Common::Array<RenderPixel> hints;
+		if (regSet) {
+			Common::Array<int> scratch;
+			scratch.resize(w * 2);
+			for (const auto &reg : regSet->getRegions())
+				outlineRegion(reg, w, h, ax, ay, fov, kPi, kTau, scratch.data(), [&](int x, int y) {
+					hints.push_back({x, y, debugRegionColor(screen->format, hint + x * 0.015f + y * 0.025f)});
+				});
+		}
+		Common::Array<int> rows;
+		if (_showWaves) {
+			rows.resize(h);
+			for (int y = 0; y < h; ++y) {
+				int offset = static_cast<int>(sin((y * 0.039269909f + _wavesT * 0.40000001f)) * -3);
+				rows[y] = y + offset < 0 ? y : MIN<int>(h - 1, y + offset);
+			}
+		}
+		if (renderer->drawCube(request, hints, _showWaves ? rows.data() : nullptr)) {
+			_gpuDirty = false;
+			return;
+		}
+	}
+	Vector3d line = start;
+	float regX = 0, regY = 0, regDX = 0, regDY = 0;
+	if (regSet && _showWaves) {
+		regY = ay - fov / 2;
+		regDX = fov / w;
+		regDY = fov / h;
+		if (regY < 0)
+			regY += kTau;
+	}
+
 	int faceSize = kVRFaceSize;
 	if (_ignoreRightPixel)
 		--faceSize;
@@ -659,7 +709,7 @@ void VR::renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float
 	ColorType *dstPixels = static_cast<ColorType *>(screen->getPixels());
 	const auto dstPixelsPitchIncrement = screen->pitch / sizeof(ColorType);
 	for (int dstY = 0; dstY != h; ++dstY, line += incrementY, dstPixels += dstPixelsPitchIncrement) {
-		if (regSet) {
+		if (regSet && _showWaves) {
 			regX = ax - fov / 2;
 			if (regX < 0)
 				regX += kTau;
@@ -687,7 +737,7 @@ void VR::renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float
 			srcY &= kVRTileSize - 1;
 			srcY += (tileId << 8);
 			auto color = _pic->getPixel(srcX, srcY);
-			if (regSet) {
+			if (regSet && _showWaves) {
 				regX += regDX;
 				if (regX >= kTau)
 					regX -= kTau;
@@ -706,43 +756,55 @@ void VR::renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float
 			} else
 				*dst = color;
 		}
-		if (regSet) {
+		if (regSet && _showWaves) {
 			regY += regDY;
 			if (regY >= kTau)
 				regY -= kTau;
 		}
 	}
+	if (regSet && !_showWaves) {
+		Common::Array<int> scratch;
+		scratch.resize(w * 2);
+		for (const auto &reg : regSet->getRegions()) {
+			outlineRegion(reg, w, h, ax, ay, fov, kPi, kTau, scratch.data(), [&](int x, int y) {
+				*static_cast<ColorType *>(screen->getBasePtr(x, y)) =
+					debugRegionColor(screen->format, hint + x * 0.015f + y * 0.025f);
+			});
+		}
+	}
 	screen->addDirtyRect(screen->getBounds());
+	renderer->uploadSoftware();
 }
 
-void VR::render(Graphics::Screen *screen, float ax, float ay, float fov, float dt, RegionSet *regSet) {
+void VR::render(Renderer *renderer, float ax, float ay, float fov, float dt, RegionSet *regSet) {
 	if (!_pic) {
-		screen->clear();
+		renderer->clear();
 		return;
 	}
 
 	for (auto &animation : _animations)
-		animation.render(*_pic->surfacePtr(), dt);
+		if (animation.render(*_pic->surfacePtr(), dt))
+			_gpuDirty = true;
 
 	if (!_vr) {
 		Common::Point dst(0, 0);
 		Common::Rect src(_pic->getBounds());
-		Common::Rect::getBlitRect(dst, src, screen->getBounds());
-		screen->copyRectToSurface(*_pic, dst.x, dst.y, src);
+		Common::Rect::getBlitRect(dst, src, renderer->bounds());
+		renderer->drawSurface(_pic->rawSurface(), src, dst);
 		if (regSet) {
 			for (auto &rect : regSet->getRegions()) {
 				auto dstRect = rect.toRect().toRect();
 				if (dstRect.isValidRect() && !dstRect.isEmpty())
-					screen->drawRoundRect(dstRect, 4, _pic->format.RGBToColor(255, 255, 255), false);
+					renderer->drawRoundRect(dstRect, _pic->format.RGBToColor(255, 255, 255));
 			}
 		}
 	} else {
-		switch (screen->format.bytesPerPixel) {
+		switch (renderer->format().bytesPerPixel) {
 		case 2:
-			renderVR<uint16>(screen, ax, ay, fov, dt, regSet);
+			renderVR<uint16>(renderer, ax, ay, fov, dt, regSet);
 			break;
 		case 4:
-			renderVR<uint32>(screen, ax, ay, fov, dt, regSet);
+			renderVR<uint32>(renderer, ax, ay, fov, dt, regSet);
 			break;
 		default:
 			error("Unsupported screen format for VR rendering");

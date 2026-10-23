@@ -36,7 +36,7 @@
 #include "engines/engine.h"
 #include "engines/savestate.h"
 #include "graphics/framelimiter.h"
-#include "graphics/screen.h"
+#include "phoenixvr/renderer.h"
 #include "video/video_decoder.h"
 
 #include "phoenixvr/angle.h"
@@ -75,7 +75,7 @@ private:
 	static constexpr float kMaxTick = 4.0f / kFPSLimit;
 
 	Graphics::FrameLimiter _frameLimiter;
-	Graphics::Screen *_screen = nullptr;
+	Renderer *_renderer = nullptr;
 	Common::Point _screenCenter;
 	const ADGameDescription *_gameDescription;
 	Common::RandomSource _randomSource;

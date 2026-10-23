@@ -371,7 +371,7 @@ void PhoenixVREngine::resetState() {
 
 PhoenixVREngine::~PhoenixVREngine() {
 	_system->lockMouse(false);
-	delete _screen;
+	delete _renderer;
 }
 
 void PhoenixVREngine::showWaves() {
@@ -601,7 +601,7 @@ void PhoenixVREngine::interpolateAngle(float x, float y, float speed, float zoom
 		// Delay for a bit. All events loops should have a delay
 		// to prevent the system being unduly loaded
 		_frameLimiter.delayBeforeSwap();
-		_screen->update();
+		_renderer->update();
 		frameDuration = _frameLimiter.startFrame();
 		t += frameDuration / 1000.0f * speed;
 	}
@@ -611,17 +611,7 @@ void PhoenixVREngine::interpolateAngle(float x, float y, float speed, float zoom
 }
 
 void PhoenixVREngine::renderFade(int color) {
-	auto &format = _screen->format;
-	for (int y = 0; y != _screen->h; ++y) {
-		for (int x = 0; x != _screen->w; ++x) {
-			uint8 r, g, b;
-			format.colorToRGB(_screen->getPixel(x, y), r, g, b);
-			int ri = CLIP(static_cast<int>(r) + color, 0, 255);
-			int gi = CLIP(static_cast<int>(g) + color, 0, 255);
-			int bi = CLIP(static_cast<int>(b) + color, 0, 255);
-			_screen->setPixel(x, y, format.RGBToColor(ri, gi, bi));
-		}
-	}
+	_renderer->fade(color);
 }
 
 void PhoenixVREngine::fade(int start, int stop, int speed) {
@@ -662,42 +652,23 @@ void PhoenixVREngine::fade(int start, int stop, int speed) {
 		// Delay for a bit. All events loops should have a delay
 		// to prevent the system being unduly loaded
 		_frameLimiter.delayBeforeSwap();
-		_screen->update();
+		_renderer->update();
 		dt = _frameLimiter.startFrame() / 1000.0f;
 	}
-}
-
-static uint32 transFadePixel(const Graphics::PixelFormat &format, uint32 left, int leftAmount, uint32 right, int rightAmount) {
-	uint8 lr, lg, lb, rr, rg, rb;
-	format.colorToRGB(left, lr, lg, lb);
-	format.colorToRGB(right, rr, rg, rb);
-	return format.RGBToColor(
-		CLIP(CLIP(static_cast<int>(lr) + leftAmount, 0, 255) + CLIP(static_cast<int>(rr) + rightAmount, 0, 255), 0, 255),
-		CLIP(CLIP(static_cast<int>(lg) + leftAmount, 0, 255) + CLIP(static_cast<int>(rg) + rightAmount, 0, 255), 0, 255),
-		CLIP(CLIP(static_cast<int>(lb) + leftAmount, 0, 255) + CLIP(static_cast<int>(rb) + rightAmount, 0, 255), 0, 255));
 }
 
 void PhoenixVREngine::transFade(int speed) {
 	debug("transfade speed: %d", speed);
 
-	Graphics::ManagedSurface oldFrame(_screen->w, _screen->h, _screen->format);
-	Graphics::ManagedSurface newFrame(_screen->w, _screen->h, _screen->format);
-	Graphics::ManagedSurface workFrame(_screen->w, _screen->h, _screen->format);
-
-	oldFrame.simpleBlitFrom(*_screen);
+	Common::ScopedPtr<RenderFrame> oldFrame(_renderer->captureFrame());
 	renderVR(0);
-	newFrame.simpleBlitFrom(*_screen);
+	Common::ScopedPtr<RenderFrame> newFrame(_renderer->captureFrame());
 
 	bool waiting = true;
 	float dt = 0;
 
 	auto renderTransition = [&](int oldAmount, int newAmount) {
-		for (int y = 0; y < _screen->h; ++y) {
-			for (int x = 0; x < _screen->w; ++x) {
-				workFrame.setPixel(x, y, transFadePixel(_screen->format, oldFrame.getPixel(x, y), oldAmount, newFrame.getPixel(x, y), newAmount));
-			}
-		}
-		_screen->simpleBlitFrom(workFrame);
+		_renderer->transition(*oldFrame, *newFrame, oldAmount, newAmount);
 	};
 
 	auto runTransition = [&](int pos, int direction) {
@@ -717,7 +688,7 @@ void PhoenixVREngine::transFade(int speed) {
 
 			renderTransition(direction > 0 ? 0 : pos, direction > 0 ? pos : 0);
 			_frameLimiter.delayBeforeSwap();
-			_screen->update();
+			_renderer->update();
 			dt = _frameLimiter.startFrame() / 1000.0f;
 
 			pos += direction * static_cast<int>(dt * speed * 1000.0f / 16);
@@ -748,7 +719,7 @@ void PhoenixVREngine::until(const Common::String &var, int value) {
 		// to prevent the system being unduly loaded
 		drawAudioSubtitles();
 		_frameLimiter.delayBeforeSwap();
-		_screen->update();
+		_renderer->update();
 		frameDuration = _frameLimiter.startFrame();
 	}
 }
@@ -774,7 +745,7 @@ void PhoenixVREngine::wait(float seconds) {
 		// to prevent the system being unduly loaded
 		drawAudioSubtitles();
 		_frameLimiter.delayBeforeSwap();
-		_screen->update();
+		_renderer->update();
 		frameDuration = _frameLimiter.startFrame();
 	}
 }
@@ -791,7 +762,8 @@ void PhoenixVREngine::restart() {
 
 void PhoenixVREngine::saveThumbnail() {
 	// saving thumbnail
-	Common::ScopedPtr<Graphics::ManagedSurface> screenshot(_screen->scale(_thumbnail.w, _thumbnail.h, true, Graphics::FLIP_V));
+	Common::ScopedPtr<Graphics::ManagedSurface> frame(_renderer->screenshot());
+	Common::ScopedPtr<Graphics::ManagedSurface> screenshot(frame->scale(_thumbnail.w, _thumbnail.h, true, Graphics::FLIP_V));
 	_thumbnail.simpleBlitFrom(*screenshot);
 }
 
@@ -1015,7 +987,7 @@ Common::SharedPtr<Subtitles> PhoenixVREngine::loadSubtitles(const Common::String
 	if (!ConfMan.getBool("subtitles"))
 		return subtitles;
 
-	subtitles = Common::SharedPtr<Subtitles>(new Subtitles(_screen));
+	subtitles = Common::SharedPtr<Subtitles>(new Subtitles(_renderer));
 	subtitles->loadSRTFile(getSubtitlePath(path));
 	if (!subtitles->isLoaded())
 		return Common::SharedPtr<Subtitles>();
@@ -1036,8 +1008,8 @@ void PhoenixVREngine::setupSubtitles(Subtitles &subtitles) const {
 	const int MIN_FONT_SIZE = 16;
 	const float BASE_FONT_SIZE_PERCENT = 1.0f / 48.0f;
 
-	int16 h = _screen->h;
-	int16 w = _screen->w;
+	int16 h = _renderer->height();
+	int16 w = _renderer->width();
 	int bottomMargin = MAX<int>(MIN_BOTTOM_MARGIN, int(h * BOTTOM_MARGIN_PERCENT));
 	int topOffset = MAX<int>(MIN_SUBTITLE_HEIGHT, int(h * SUBTITLE_HEIGHT_PERCENT));
 	int fontSize = MAX<int>(MIN_FONT_SIZE, int(h * BASE_FONT_SIZE_PERCENT));
@@ -1070,7 +1042,7 @@ void PhoenixVREngine::playMovie(const Common::String &movie) {
 		return;
 	}
 
-	g_system->fillScreen(0);
+	_renderer->clear();
 	_system->lockMouse(false);
 	dec->start();
 	_currentDecoder = dec.get();
@@ -1102,8 +1074,8 @@ void PhoenixVREngine::playMovie(const Common::String &movie) {
 			}
 		}
 		if (frame && (!frame->format.isCLUT8() || palette)) {
-			Common::Point dstPos((g_system->getWidth() - frame->w) / 2, (g_system->getHeight() - frame->h) / 2);
-			_screen->simpleBlitFrom(*frame, dstPos, Graphics::FLIP_NONE, false, 0xff, palette.get());
+			Common::Point dstPos((_renderer->width() - frame->w) / 2, (_renderer->height() - frame->h) / 2);
+			_renderer->drawSurface(*frame, dstPos, false, palette.get());
 		}
 
 		// Delay for a bit. All events loops should have a delay
@@ -1111,7 +1083,7 @@ void PhoenixVREngine::playMovie(const Common::String &movie) {
 		_frameLimiter.delayBeforeSwap();
 		if (subtitles && !dec->isPaused())
 			subtitles->drawSubtitle(dec->getTime());
-		_screen->update();
+		_renderer->update();
 		_frameLimiter.startFrame();
 	}
 	_system->lockMouse(_vr.isVR());
@@ -1145,7 +1117,7 @@ void PhoenixVREngine::drawArchiveImage(const Common::String &image, int x, int y
 		return;
 	}
 
-	_screen->simpleBlitFrom(*surface, Common::Point(x, y));
+	_renderer->drawSurface(*surface, Common::Point(x, y));
 
 	Common::Point pos(x, y);
 	for (ArchiveImage &archiveImage : _archiveImages) {
@@ -1204,7 +1176,7 @@ void PhoenixVREngine::stopImageOverlay() {
 
 void PhoenixVREngine::updateStage() {
 	renderVR(0);
-	_screen->update();
+	_renderer->update();
 }
 
 void PhoenixVREngine::startCible(const Common::String &name, int periodSeconds, const Common::Array<int> &bounds) {
@@ -1465,37 +1437,12 @@ void PhoenixVREngine::renderTimer() {
 	fgSrcRect.right = fgSrcRect.left + fgSrcRect.width() * timeLeft;
 	if (!fgRect.isValidRect() || !fgSrcRect.isValidRect())
 		return;
-	_screen->simpleBlitFrom(*timerBg, bgRect.origin());
-	_screen->simpleBlitFrom(*timerFg, fgSrcRect, fgRect.origin());
+	_renderer->drawSurface(*timerBg, bgRect.origin());
+	_renderer->drawSurface(*timerFg, fgSrcRect, fgRect.origin());
 }
 
 void PhoenixVREngine::renderLightEffect() {
-	if (_lightEffect.empty() || _screen->w != 640 || _screen->h != 480)
-		return;
-
-	for (int y = 0; y != 480; ++y) {
-		for (int x = 0; x != 640; ++x) {
-			const uint32 effect = _lightEffect[y * 640 + x];
-			const uint alpha = (effect >> 16) & 0x1f;
-			if (alpha == 0)
-				continue;
-
-			const uint8 srcR = (((effect >> 11) & 0x1f) * 255) / 31;
-			const uint8 srcG = (((effect >> 5) & 0x3f) * 255) / 63;
-			const uint8 srcB = ((effect & 0x1f) * 255) / 31;
-			if (alpha == 31) {
-				_screen->setPixel(x, y, _screen->format.RGBToColor(srcR, srcG, srcB));
-				continue;
-			}
-
-			uint8 dstR, dstG, dstB;
-			_screen->format.colorToRGB(_screen->getPixel(x, y), dstR, dstG, dstB);
-			const uint8 outR = (dstR * (31 - alpha) + srcR * alpha) / 31;
-			const uint8 outG = (dstG * (31 - alpha) + srcG * alpha) / 31;
-			const uint8 outB = (dstB * (31 - alpha) + srcB * alpha) / 31;
-			_screen->setPixel(x, y, _screen->format.RGBToColor(outR, outG, outB));
-		}
-	}
+	_renderer->light(_lightEffect);
 }
 
 void PhoenixVREngine::renderLensflare() {
@@ -1519,13 +1466,13 @@ void PhoenixVREngine::renderLensflare() {
 		return;
 
 	const float scaleX = tanf(_fov / 2.0f);
-	const float scaleY = scaleX * _screen->h / _screen->w;
+	const float scaleY = scaleX * _renderer->height() / _renderer->width();
 	if (scaleX == 0.0f || scaleY == 0.0f)
 		return;
 
 	const float sourceX = _screenCenter.x + cameraX / cameraZ * _screenCenter.x / scaleX;
 	const float sourceY = _screenCenter.y - cameraY / cameraZ * _screenCenter.y / scaleY;
-	if (sourceX < 0.0f || sourceX >= _screen->w || sourceY < 0.0f || sourceY >= _screen->h)
+	if (sourceX < 0.0f || sourceX >= _renderer->width() || sourceY < 0.0f || sourceY >= _renderer->height())
 		return;
 
 	for (const Lens &lens : _lenses) {
@@ -1541,27 +1488,7 @@ void PhoenixVREngine::renderLensflare() {
 		const int dstX = static_cast<int>(sourceX + (_screenCenter.x - sourceX) * lens.scale);
 		const int dstY = static_cast<int>(sourceY + (_screenCenter.y - sourceY) * lens.scale);
 
-		// TODO: Could ManagedSurface routines be used here?
-		for (int y = 0; y != src.h; ++y) {
-			const int screenY = dstY + y;
-			if (screenY < 0 || screenY >= _screen->h)
-				continue;
-			for (int x = 0; x != src.w; ++x) {
-				const int screenX = dstX + x;
-				if (screenX < 0 || screenX >= _screen->w)
-					continue;
-
-				uint8 srcR, srcG, srcB, srcA, dstR, dstG, dstB;
-				src.format.colorToARGB(src.getPixel(x, y), srcA, srcR, srcG, srcB);
-				srcR = srcR * srcA / 255;
-				srcG = srcG * srcA / 255;
-				srcB = srcB * srcA / 255;
-				if ((srcR | srcG | srcB) == 0)
-					continue;
-				_screen->format.colorToRGB(_screen->getPixel(screenX, screenY), dstR, dstG, dstB);
-				_screen->setPixel(screenX, screenY, _screen->format.RGBToColor(CLIP<int>(dstR + srcR, 0, 255), CLIP<int>(dstG + srcG, 0, 255), CLIP<int>(dstB + srcB, 0, 255)));
-			}
-		}
+		_renderer->additive(src, Common::Point(dstX, dstY));
 	}
 }
 
@@ -1577,12 +1504,12 @@ void PhoenixVREngine::renderSprites() {
 			continue;
 
 		auto &src = *it->_value;
-		_screen->copyRectToSurface(src, sprite.x, sprite.y, src.getBounds());
+		_renderer->drawSurface(src.rawSurface(), Common::Point(sprite.x, sprite.y));
 	}
 }
 
 void PhoenixVREngine::renderVR(float dt) {
-	_vr.render(_screen, _angleX.angle(), _angleY.angle(), _fov, dt, _showRegions ? _regSet.get() : nullptr);
+	_vr.render(_renderer, _angleX.angle(), _angleY.angle(), _fov, dt, _showRegions ? _regSet.get() : nullptr);
 	renderLightEffect();
 	renderLensflare();
 	renderSprites();
@@ -1599,7 +1526,7 @@ void PhoenixVREngine::renderArchiveImages() {
 		if (!surface)
 			continue;
 
-		_screen->simpleBlitFrom(*surface, archiveImage.pos);
+		_renderer->drawSurface(*surface, archiveImage.pos);
 	}
 }
 
@@ -1626,18 +1553,18 @@ void PhoenixVREngine::paintText(const TextState &textState) {
 
 	byte r, g, b;
 	_rgb565.colorToRGB(textState.color, r, g, b);
-	uint32 textColor = _screen->format.RGBToColor(r, g, b);
+	uint32 textColor = _renderer->format().RGBToColor(r, g, b);
 	int16 dstX = textState.rect.left + (textState.rect.width() - textW) / 2;
 	int16 dstY = textState.rect.top + (textState.rect.height() - fontH * lines.size()) / 2;
 	for (uint i = 0; i < lines.size(); ++i) {
 		int16 lineX = dstX + (textW - font->getStringWidth(lines[i])) / 2;
-		font->drawString(_screen, lines[i], lineX, dstY + i * fontH, textState.rect.right - lineX, textColor, Graphics::kTextAlignLeft);
+		_renderer->drawText(*font, lines[i], lineX, dstY + i * fontH, textState.rect.right - lineX, textColor);
 	}
 }
 
 void PhoenixVREngine::renderImageOverlay() {
 	if (_imageOverlay)
-		_screen->simpleBlitFrom(*_imageOverlay, _imageOverlayPos);
+		_renderer->drawSurface(*_imageOverlay, _imageOverlayPos);
 }
 
 void PhoenixVREngine::saveVariables() {
@@ -1920,9 +1847,9 @@ void PhoenixVREngine::tick(float dt) {
 		cursor = loadCursor(anyMatched ? _defaultCursor[1] : _defaultCursor[0]);
 	if (cursor) {
 		if (!cursor->surface->hasTransparentColor())
-			_screen->simpleBlitFrom(*cursor->surface, _mousePos - cursor->offset, Graphics::FLIP_NONE, true);
+			_renderer->drawSurface(*cursor->surface, _mousePos - cursor->offset, true);
 		else
-			_screen->simpleBlitFrom(*cursor->surface, _mousePos - cursor->offset);
+			_renderer->drawSurface(*cursor->surface, _mousePos - cursor->offset);
 	}
 }
 
@@ -1938,15 +1865,8 @@ void PhoenixVREngine::drawAudioSubtitles() {
 }
 
 Common::Error PhoenixVREngine::run() {
-	if (version() == 1) {
-		Common::List<Graphics::PixelFormat> formats;
-		formats.push_back(_rgb565);
-		initGraphics(640, 480, formats);
-	} else {
-		initGraphics(640, 480, nullptr);
-	}
-
-	_pixelFormat = g_system->getScreenFormat();
+	_renderer = Renderer::create(version() == 1);
+	_pixelFormat = _renderer->format();
 	if (_pixelFormat.isCLUT8())
 		return Common::kUnsupportedColorMode;
 
@@ -1986,8 +1906,7 @@ Common::Error PhoenixVREngine::run() {
 	setCursorDefault(0, "Cursor1.pcx");
 	setCursorDefault(1, "Cursor2.pcx");
 
-	_screen = new Graphics::Screen();
-	_screenCenter = _screen->getBounds().center();
+	_screenCenter = _renderer->bounds().center();
 
 	// Set the engine's debugger console before declaring script variables.
 	setDebugger(new Console());
@@ -2160,7 +2079,7 @@ Common::Error PhoenixVREngine::run() {
 		// to prevent the system being unduly loaded
 		drawAudioSubtitles();
 		_frameLimiter.delayBeforeSwap();
-		_screen->update();
+		_renderer->update();
 		frameDuration = _frameLimiter.startFrame();
 	}
 
