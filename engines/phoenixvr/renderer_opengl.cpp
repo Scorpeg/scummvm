@@ -21,8 +21,6 @@
 
 #include "common/scummsys.h"
 #ifdef USE_OPENGL_SHADERS
-#include "phoenixvr/renderer.h"
-#include "phoenixvr/opengl_state.h"
 #include "common/config-manager.h"
 #include "common/debug.h"
 #include "common/system.h"
@@ -30,13 +28,18 @@
 #include "graphics/font.h"
 #include "graphics/opengl/context.h"
 #include "graphics/opengl/texture.h"
+#include "phoenixvr/opengl_state.h"
+#include "phoenixvr/renderer.h"
 
 namespace PhoenixVR {
 namespace {
 
 struct OpenGLFrame : RenderFrame {
 	GLuint texture = 0;
-	~OpenGLFrame() override { if (texture) glDeleteTextures(1, &texture); }
+	~OpenGLFrame() override {
+		if (texture)
+			glDeleteTextures(1, &texture);
+	}
 };
 
 struct UploadTexture {
@@ -48,8 +51,25 @@ struct UploadTexture {
 	uint64 age = 0;
 	bool alpha = false, keyed = false;
 	uint32 key = 0;
-	~UploadTexture() { if (texture) glDeleteTextures(1, &texture); }
+	~UploadTexture() {
+		if (texture)
+			glDeleteTextures(1, &texture);
+	}
 	size_t cost() const { return pixels.size() + palette.size() + rect.width() * rect.height() * 4; }
+};
+
+struct LayerTexture {
+	const Graphics::Font *font = nullptr;
+	Common::U32String text;
+	int width = 0, height = 0;
+	uint32 color = 0;
+	GLuint texture = 0;
+	uint64 age = 0;
+	~LayerTexture() {
+		if (texture)
+			glDeleteTextures(1, &texture);
+	}
+	size_t cost() const { return width * height * 4; }
 };
 
 GLuint compileShader(GLenum type, const char *text) {
@@ -77,17 +97,18 @@ void textureParameters() {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-}
+} // namespace
 
 class OpenGLRenderer : public Renderer {
 	CubeRenderer _cube;
-	GLuint _program = 0, _vertices = 0, _framebuffer = 0, _targets[3] = {};
+	GLuint _program = 0, _vertices = 0, _dynamicVertices = 0, _framebuffer = 0, _targets[3] = {};
 	int _current = 0;
 	GLint _rect, _uv, _mode, _amount;
 	Common::Array<UploadTexture *> _uploads;
 	Common::Array<byte> _rgba;
 	Common::Array<uint32> _lightData;
-	Graphics::ManagedSurface _lightLayer;
+	GLuint _lightTexture = 0;
+	Common::Array<LayerTexture *> _layers;
 	uint64 _age = 0;
 
 	void target(int index) {
@@ -101,7 +122,7 @@ class OpenGLRenderer : public Renderer {
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, texture);
 		glUniform4f(_rect, rect.left * 2.0f / width() - 1, rect.top * 2.0f / height() - 1,
-			rect.right * 2.0f / width() - 1, rect.bottom * 2.0f / height() - 1);
+					rect.right * 2.0f / width() - 1, rect.bottom * 2.0f / height() - 1);
 		glUniform4f(_uv, u0, v0, u1, v1);
 		glUniform1i(_mode, mode);
 		glUniform2f(_amount, a, b);
@@ -124,8 +145,6 @@ class OpenGLRenderer : public Renderer {
 			glEnable(GL_BLEND);
 			glBlendFuncSeparate(GL_SRC_ALPHA, mode == 2 ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
 		}
-		static const GLfloat vertices[] = {0,0,0,0, 1,0,1,0, 0,1,0,1, 1,1,1,1};
-		glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	}
 
@@ -168,7 +187,7 @@ class OpenGLRenderer : public Renderer {
 			_uploads.push_back(entry);
 		} else {
 			changed = entry->palette.size() != paletteBytes ||
-				(paletteBytes && memcmp(entry->palette.data(), palette->data(), paletteBytes));
+					  (paletteBytes && memcmp(entry->palette.data(), palette->data(), paletteBytes));
 			for (int y = 0; !changed && y < rect.height(); ++y)
 				changed = memcmp(entry->pixels.data() + y * rowBytes, surface.getBasePtr(rect.left, rect.top + y), rowBytes) != 0;
 		}
@@ -218,6 +237,59 @@ class OpenGLRenderer : public Renderer {
 		return entry->texture;
 	}
 
+	void uploadLayer(GLuint &texture, const Graphics::Surface &surface) {
+		glActiveTexture(GL_TEXTURE0);
+		if (!texture)
+			glGenTextures(1, &texture);
+		glBindTexture(GL_TEXTURE_2D, texture);
+		textureParameters();
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, surface.w, surface.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, surface.getPixels());
+		if (glGetError() != GL_NO_ERROR)
+			error("PhoenixVR: cannot upload overlay texture");
+	}
+
+	GLuint layerTexture(const Graphics::Font *font, const Common::U32String &text, int w, int h, uint32 color) {
+		for (auto *entry : _layers) {
+			if (entry->font == font && entry->text == text && entry->width == w && entry->height == h && entry->color == color) {
+				entry->age = ++_age;
+				return entry->texture;
+			}
+		}
+		while (!_layers.empty()) {
+			size_t bytes = w * h * 4;
+			uint oldest = 0;
+			for (uint i = 0; i < _layers.size(); ++i) {
+				bytes += _layers[i]->cost();
+				if (_layers[i]->age < _layers[oldest]->age)
+					oldest = i;
+			}
+			if (bytes <= 2 * 1024 * 1024 && _layers.size() < 32)
+				break;
+			delete _layers[oldest];
+			_layers.remove_at(oldest);
+		}
+		Graphics::ManagedSurface layer(w, h, Graphics::PixelFormat::createFormatRGBA32());
+		layer.clear();
+		byte r, g, b;
+		format().colorToRGB(color, r, g, b);
+		uint32 rgba = layer.format.ARGBToColor(255, r, g, b);
+		if (font)
+			font->drawString(&layer, text, 0, 0, w, rgba, Graphics::kTextAlignLeft);
+		else
+			layer.drawRoundRect(Common::Rect(w, h), 4, rgba, false);
+		auto *entry = new LayerTexture();
+		entry->font = font;
+		entry->text = text;
+		entry->width = w;
+		entry->height = h;
+		entry->color = color;
+		entry->age = ++_age;
+		uploadLayer(entry->texture, layer.rawSurface());
+		_layers.push_back(entry);
+		return entry->texture;
+	}
+
 protected:
 	void blit(const Graphics::Surface &surface, const Common::Rect &rect, const Common::Point &position,
 			  bool alpha, const Graphics::Palette *palette, bool keyed, uint32 key) override {
@@ -226,9 +298,14 @@ protected:
 		if (!_surface.clip(src, dst, surface.w, surface.h))
 			return;
 		ScopedGLState state;
-		GLuint texture = upload(surface, src, alpha, palette, keyed, key);
+		Common::Rect area(surface.w, surface.h);
+		if (surface.w > OpenGLContext.maxTextureSize || surface.h > OpenGLContext.maxTextureSize)
+			area = src;
+		GLuint texture = upload(surface, area, alpha, palette, keyed, key);
 		target(_current);
-		quad(texture, dst, (alpha || keyed) ? 1 : 0);
+		quad(texture, dst, (alpha || keyed) ? 1 : 0, 0, 0,
+			 (src.left - area.left) / float(area.width()), (src.top - area.top) / float(area.height()),
+			 (src.right - area.left) / float(area.width()), (src.bottom - area.top) / float(area.height()));
 	}
 
 public:
@@ -236,9 +313,18 @@ public:
 	~OpenGLRenderer() override {
 		for (auto *entry : _uploads)
 			delete entry;
-		if (_program) glDeleteProgram(_program);
-		if (_vertices) glDeleteBuffers(1, &_vertices);
-		if (_framebuffer) glDeleteFramebuffers(1, &_framebuffer);
+		if (_program)
+			glDeleteProgram(_program);
+		for (auto *entry : _layers)
+			delete entry;
+		if (_lightTexture)
+			glDeleteTextures(1, &_lightTexture);
+		if (_vertices)
+			glDeleteBuffers(1, &_vertices);
+		if (_dynamicVertices)
+			glDeleteBuffers(1, &_dynamicVertices);
+		if (_framebuffer)
+			glDeleteFramebuffers(1, &_framebuffer);
 		glDeleteTextures(3, _targets);
 	}
 
@@ -247,19 +333,23 @@ public:
 			return false;
 		ScopedGLState state;
 		const char *vertex =
-			"attribute vec4 vertex; uniform vec4 rect; uniform vec4 texRect; varying vec2 uv;\n"
-			"void main(){gl_Position=vec4(mix(rect.xy,rect.zw,vertex.xy),0.0,1.0);uv=mix(texRect.xy,texRect.zw,vertex.zw);}\n";
+			"#ifdef GL_ES\nprecision mediump int;\n#endif\n"
+			"attribute vec4 vertex; uniform vec4 rect; uniform vec4 texRect; uniform int mode; varying vec2 uv; varying vec3 tint;\n"
+			"void main(){gl_Position=vec4(mix(rect.xy,rect.zw,vertex.xy),0.0,1.0);uv=mix(texRect.xy,texRect.zw,vertex.zw);"
+			"tint=vec3(0.0);if(mode==5)tint=vec3(floor(vertex.z/65536.0),mod(floor(vertex.z/256.0),256.0),mod(vertex.z,256.0))/255.0;}\n";
 		const char *fragment =
 			"#ifdef GL_ES\nprecision mediump float;\n#endif\n"
-			"uniform sampler2D image; uniform sampler2D other; uniform int mode; uniform vec2 amount; varying vec2 uv;\n"
-			"void main(){vec4 c=texture2D(image,uv);"
+			"uniform sampler2D image; uniform sampler2D other; uniform int mode; uniform vec2 amount; varying vec2 uv; varying vec3 tint;\n"
+			"void main(){vec4 c;if(mode==5)c=vec4(tint,1.0);else c=texture2D(image,uv);"
 			"if(mode==3)c.rgb=clamp(c.rgb+amount.x,0.0,1.0);"
 			"if(mode==4)c.rgb=clamp(clamp(c.rgb+amount.x,0.0,1.0)+clamp(texture2D(other,uv).rgb+amount.y,0.0,1.0),0.0,1.0);"
 			"if(mode!=1 && mode!=2)c.a=1.0;gl_FragColor=c;}\n";
 		GLuint vs = compileShader(GL_VERTEX_SHADER, vertex), fs = compileShader(GL_FRAGMENT_SHADER, fragment);
 		if (!vs || !fs) {
-			if (vs) glDeleteShader(vs);
-			if (fs) glDeleteShader(fs);
+			if (vs)
+				glDeleteShader(vs);
+			if (fs)
+				glDeleteShader(fs);
 			return false;
 		}
 		_program = glCreateProgram();
@@ -271,7 +361,8 @@ public:
 		glLinkProgram(_program);
 		GLint ok;
 		glGetProgramiv(_program, GL_LINK_STATUS, &ok);
-		if (!ok) return false;
+		if (!ok)
+			return false;
 		_rect = glGetUniformLocation(_program, "rect");
 		_uv = glGetUniformLocation(_program, "texRect");
 		_mode = glGetUniformLocation(_program, "mode");
@@ -280,6 +371,10 @@ public:
 		glUniform1i(glGetUniformLocation(_program, "image"), 0);
 		glUniform1i(glGetUniformLocation(_program, "other"), 1);
 		glGenBuffers(1, &_vertices);
+		glBindBuffer(GL_ARRAY_BUFFER, _vertices);
+		static const GLfloat vertices[] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1};
+		glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+		glGenBuffers(1, &_dynamicVertices);
 		glGenFramebuffers(1, &_framebuffer);
 		glGenTextures(3, _targets);
 		for (int i = 0; i < 3; ++i) {
@@ -343,10 +438,12 @@ public:
 			for (int y = 0; y < height(); ++y) {
 				float a = rows[y] / float(height()), b = (rows[y] + 1) / float(height());
 				float u = y / float(height()), v = (y + 1) / float(height());
-				const GLfloat row[] = {0,a,0,u, 1,a,1,u, 0,b,0,v, 0,b,0,v, 1,a,1,u, 1,b,1,v};
+				const GLfloat row[] = {0, a, 0, u, 1, a, 1, u, 0, b, 0, v, 0, b, 0, v, 1, a, 1, u, 1, b, 1, v};
 				for (float value : row)
 					vertices.push_back(value);
 			}
+			glBindBuffer(GL_ARRAY_BUFFER, _dynamicVertices);
+			glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
 			glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(), GL_STREAM_DRAW);
 			glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 4);
 		}
@@ -354,44 +451,55 @@ public:
 	}
 
 	void drawPixels(const Common::Array<RenderPixel> &pixels) override {
-		if (pixels.empty()) return;
-		Common::Rect rect(pixels[0].x, pixels[0].y, pixels[0].x + 1, pixels[0].y + 1);
+		if (pixels.empty())
+			return;
+		Common::Array<GLfloat> vertices;
+		vertices.reserve(pixels.size() * 24);
 		for (const auto &p : pixels) {
-			rect.left = MIN<int>(rect.left, p.x); rect.top = MIN<int>(rect.top, p.y);
-			rect.right = MAX<int>(rect.right, p.x + 1); rect.bottom = MAX<int>(rect.bottom, p.y + 1);
-		}
-		rect.clip(width(), height());
-		if (rect.isEmpty()) return;
-		Graphics::ManagedSurface layer(rect.width(), rect.height(), Graphics::PixelFormat::createFormatRGBA32());
-		layer.clear();
-		for (const auto &p : pixels) {
-			if (!rect.contains(p.x, p.y)) continue;
+			if (!bounds().contains(p.x, p.y))
+				continue;
 			byte r, g, b;
 			format().colorToRGB(p.color, r, g, b);
-			layer.setPixel(p.x - rect.left, p.y - rect.top, layer.format.ARGBToColor(255, r, g, b));
+			float color = (uint32(r) << 16) | (uint32(g) << 8) | b;
+			float x0 = p.x / float(width()), x1 = (p.x + 1) / float(width());
+			float y0 = p.y / float(height()), y1 = (p.y + 1) / float(height());
+			const GLfloat pixel[] = {x0, y0, color, 0, x1, y0, color, 0, x0, y1, color, 0,
+									 x0, y1, color, 0, x1, y0, color, 0, x1, y1, color, 0};
+			for (float value : pixel)
+				vertices.push_back(value);
 		}
-		drawSurface(layer, rect.origin(), true);
+		if (vertices.empty())
+			return;
+		ScopedGLState state;
+		target(_current);
+		prepare(_targets[(_current + 1) % 3], bounds(), 0, 0, 1, 1, 5);
+		glBindBuffer(GL_ARRAY_BUFFER, _dynamicVertices);
+		glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+		glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(), GL_STREAM_DRAW);
+		glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 4);
 	}
 
 	void drawRoundRect(const Common::Rect &rect, uint32 color) override {
-		if (rect.isEmpty()) return;
-		Graphics::ManagedSurface layer(width(), height(), Graphics::PixelFormat::createFormatRGBA32());
-		layer.clear();
-		byte r, g, b;
-		format().colorToRGB(color, r, g, b);
-		layer.drawRoundRect(rect, 4, layer.format.ARGBToColor(255, r, g, b), false);
-		drawSurface(layer, Common::Point(), true);
+		if (rect.isEmpty() || !rect.intersects(bounds()))
+			return;
+		ScopedGLState state;
+		GLuint texture = layerTexture(nullptr, Common::U32String(), rect.width(), rect.height(), color);
+		target(_current);
+		quad(texture, rect, 1);
 	}
 
 	void drawText(const Graphics::Font &font, const Common::U32String &text, int x, int y, int maxWidth, uint32 color) override {
-		if (maxWidth <= 0) return;
+		if (maxWidth <= 0 || text.empty())
+			return;
 		int w = MIN<int>(maxWidth, MAX(1, font.getStringWidth(text)));
-		Graphics::ManagedSurface layer(w, font.getFontHeight(), Graphics::PixelFormat::createFormatRGBA32());
-		layer.clear();
-		byte r, g, b;
-		format().colorToRGB(color, r, g, b);
-		font.drawString(&layer, text, 0, 0, maxWidth, layer.format.ARGBToColor(255, r, g, b), Graphics::kTextAlignLeft);
-		drawSurface(layer, Common::Point(x, y), true);
+		Common::Rect rect(w, font.getFontHeight());
+		rect.moveTo(x, y);
+		if (rect.isEmpty() || !rect.intersects(bounds()))
+			return;
+		ScopedGLState state;
+		GLuint texture = layerTexture(&font, text, w, rect.height(), color);
+		target(_current);
+		quad(texture, rect, 1);
 	}
 
 	void fade(int amount) override {
@@ -403,28 +511,37 @@ public:
 	}
 
 	void light(const Common::Array<uint32> &pixels) override {
-		if (pixels.size() != uint(width() * height())) return;
+		if (pixels.size() != uint(width() * height()))
+			return;
+		ScopedGLState state;
 		if (_lightData.size() != pixels.size() || memcmp(_lightData.data(), pixels.data(), pixels.size() * sizeof(uint32))) {
 			_lightData = pixels;
-			_lightLayer.create(width(), height(), Graphics::PixelFormat::createFormatRGBA32());
+			Graphics::ManagedSurface layer(width(), height(), Graphics::PixelFormat::createFormatRGBA32());
 			for (int y = 0; y < height(); ++y)
 				for (int x = 0; x < width(); ++x) {
 					uint32 p = pixels[y * width() + x];
-					_lightLayer.setPixel(x, y, _lightLayer.format.ARGBToColor(((p >> 16) & 31) * 255 / 31,
-						((p >> 11) & 31) * 255 / 31, ((p >> 5) & 63) * 255 / 63, (p & 31) * 255 / 31));
+					layer.setPixel(x, y, layer.format.ARGBToColor(((p >> 16) & 31) * 255 / 31, ((p >> 11) & 31) * 255 / 31, ((p >> 5) & 63) * 255 / 63, (p & 31) * 255 / 31));
 				}
+			uploadLayer(_lightTexture, layer.rawSurface());
 		}
-		drawSurface(_lightLayer, Common::Point(), true);
+		target(_current);
+		quad(_lightTexture, bounds(), 1);
 	}
 
 	void additive(const Graphics::Surface &surface, const Common::Point &position) override {
 		Common::Rect src(surface.w, surface.h), dst(surface.w, surface.h);
 		dst.moveTo(position.x, position.y);
-		if (!_surface.clip(src, dst, surface.w, surface.h)) return;
+		if (!_surface.clip(src, dst, surface.w, surface.h))
+			return;
 		ScopedGLState state;
-		GLuint texture = upload(surface, src, true, nullptr, false, 0);
+		Common::Rect area(surface.w, surface.h);
+		if (surface.w > OpenGLContext.maxTextureSize || surface.h > OpenGLContext.maxTextureSize)
+			area = src;
+		GLuint texture = upload(surface, area, true, nullptr, false, 0);
 		target(_current);
-		quad(texture, dst, 2);
+		quad(texture, dst, 2, 0, 0,
+			 (src.left - area.left) / float(area.width()), (src.top - area.top) / float(area.height()),
+			 (src.right - area.left) / float(area.width()), (src.bottom - area.top) / float(area.height()));
 	}
 
 	RenderFrame *captureFrame() override {
@@ -463,10 +580,11 @@ public:
 
 Renderer *createOpenGLRenderer(const Graphics::PixelFormat &format) {
 	auto *renderer = new OpenGLRenderer(format);
-	if (renderer->initialize()) return renderer;
+	if (renderer->initialize())
+		return renderer;
 	delete renderer;
 	return nullptr;
 }
 
-}
+} // namespace PhoenixVR
 #endif
