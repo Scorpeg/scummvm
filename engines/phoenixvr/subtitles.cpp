@@ -20,13 +20,14 @@
  */
 
 #include "phoenixvr/subtitles.h"
+#include "phoenixvr/renderer.h"
 
 #include "graphics/font.h"
 #include "graphics/managed_surface.h"
 
 namespace PhoenixVR {
 
-Subtitles::Subtitles(Graphics::ManagedSurface *target) : _target(target) {
+Subtitles::Subtitles(Renderer *target) : _target(target) {
 }
 
 Subtitles::~Subtitles() {
@@ -66,7 +67,7 @@ void Subtitles::drawSubtitle(uint32 timestamp) {
 
 	const Common::Point position(_bbox.left - kOutlineWidth + _bounds.left,
 								 _bbox.top - kOutlineWidth + _bounds.top);
-	_target->simpleBlitFrom(_outlined, _bounds, position, Graphics::FLIP_NONE, true);
+	_target->drawSurface(_outlined, _bounds, position, true);
 }
 
 void Subtitles::renderOutline() {
