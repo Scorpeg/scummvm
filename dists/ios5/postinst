@@ -1,0 +1,16 @@
+#!/bin/sh
+case "${1:-}" in
+    configure)
+        if command -v uicache >/dev/null 2>&1; then
+            if command -v su >/dev/null 2>&1 && su mobile -c uicache; then
+                exit 0
+            fi
+            if ! uicache; then
+                echo 'ScummVM: installed, but icon-cache refresh failed. Run uicache as mobile.' >&2
+            fi
+        else
+            echo 'ScummVM: installed; uicache is unavailable, so refresh the icon cache manually.' >&2
+        fi
+        ;;
+esac
+exit 0

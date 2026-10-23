@@ -943,7 +943,7 @@ Usage: $0 [OPTIONS]...
 
 Configuration:
   -h, --help               display this help and exit
-  --backend=BACKEND        backend to build (3ds, atari, android, dc, ds, ios7,
+  --backend=BACKEND        backend to build (3ds, atari, android, dc, ds, ios5, ios7,
                            maemo, n64, null, opendingux, openpandora, psp, psp2,
                            samsungtv, sdl, switch, wii) [sdl]
 
@@ -980,6 +980,7 @@ Special configuration feature:
                                             dreamcast for Sega Dreamcast
                                             ds for Nintendo DS
                                             gamecube for Nintendo GameCube
+                                            ios5 for Apple iPad (iOS >= 5.1, ARMv7)
                                             ios7 for Apple iPhone / iPad (iOS >= 7)
                                             ios7-arm64 for Apple iPhone / iPad (iOS >= 7, 64-bit)
                                             kos32 for Kolibri OS
@@ -1862,7 +1863,7 @@ i586-mingw32msvc)
 	_host_os=mingw32msvc
 	_host_cpu=i586
 	;;
-ios7)
+ios5 | ios7)
 	_host_os=iphoneos
 	_host_cpu=arm
 	_host_alias=arm-apple-darwin11
@@ -3868,6 +3869,18 @@ if test -n "$_host"; then
 			add_line_to_config_h "/* #define DEBUG_WII_GDB_NETWORK */"
 			add_line_to_config_h "#define USE_WII_DI"
 			;;
+		ios5)
+			add_line_to_config_mk 'IPHONE = 1'
+			add_line_to_config_mk 'IPHONE_IOS5 = 1'
+			append_var DEFINES "-DIPHONE -DIPHONE_IOS7 -DIPHONE_IOS5 -DTARGET_OS_IOS=1 -DTARGET_OS_TV=0"
+			_backend="ios5"
+			_port_mk="backends/platform/ios5/ios5.mk"
+			python3 "$_srcdir/backends/platform/ios5/prepare.py" --output "`pwd`/ios5-source" || exit 1
+			_srcdir="`pwd`/ios5-source"
+			_seq_midi=no
+			_timidity=no
+			_ext_neon=yes
+			;;
 		ios7*)
 			add_line_to_config_mk 'IPHONE = 1'
 			append_var DEFINES "-DIPHONE -DIPHONE_IOS7"
@@ -4318,12 +4331,19 @@ case $_backend in
 		_sdl=yes
 		append_var MODULES "backends/platform/sdl"
 		;;
-	ios7)
+	ios5 | ios7)
 		append_var LIBS "-lobjc -framework UIKit -framework CoreGraphics -framework OpenGLES"
 		append_var LIBS "-framework QuartzCore -framework CoreFoundation -framework Foundation"
 		append_var LIBS "-framework AudioToolbox -framework CoreAudio -framework SystemConfiguration"
-		append_var LIBS "-framework GameController -framework CoreMIDI"
-		if test "$_host" = 'tvos'; then
+		if test "$_host" != ios5; then
+			append_var LIBS "-framework GameController -framework CoreMIDI"
+		fi
+		if test "$_host" = ios5; then
+			append_var LIBS "-framework CoreVideo"
+			append_var LDFLAGS "-miphoneos-version-min=5.1 -arch armv7 -Wl,-no_data_const"
+			append_var CFLAGS "-miphoneos-version-min=5.1 -arch armv7"
+			append_var CXXFLAGS "-miphoneos-version-min=5.1 -arch armv7"
+		elif test "$_host" = 'tvos'; then
 			append_var LDFLAGS "-mtvos-version-min=9 -arch arm64"
 			append_var CFLAGS "-mtvos-version-min=9 -arch arm64"
 			append_var CXXFLAGS "-mtvos-version-min=9 -arch arm64"
@@ -4336,7 +4356,7 @@ case $_backend in
 			append_var CFLAGS "-miphoneos-version-min=7.1 -arch armv7"
 			append_var CXXFLAGS "-miphoneos-version-min=7.1 -arch armv7"
 		fi
-		if test -n "$SDKROOT"; then
+		if test -n "$SDKROOT" && test "$_host" != ios5; then
 			append_var LDFLAGS "-mlinker-version=134.9 -B/usr/local/bin/arm-apple-darwin11-"
 			append_var CFLAGS "-isysroot $SDKROOT -F$SDKROOT/System/Library/Frameworks"
 			append_var CXXFLAGS "-isysroot $SDKROOT -I$SDKROOT/usr/include/c++/4.2.1 -F$SDKROOT/System/Library/Frameworks"
@@ -4859,7 +4879,7 @@ fi
 # Enable 16bit support only for backends which support it
 #
 case $_backend in
-	3ds | android | dc | ds | emscripten | ios7 | kolibrios | maemo | null | opendingux | miyoomini | miyoo | openpandora | psp | psp2 | sailfish | samsungtv | sdl | switch | wii)
+	3ds | android | dc | ds | emscripten | ios5 | ios7 | kolibrios | maemo | null | opendingux | miyoomini | miyoo | openpandora | psp | psp2 | sailfish | samsungtv | sdl | switch | wii)
 		if test "$_16bit" = auto ; then
 			_16bit=yes
 		else
@@ -6814,7 +6834,7 @@ if test "$_opengl_mode" != none ; then
 			_opengl_glad=no # https://github.com/Dav1dde/glad-web/issues/12
 			append_var OPENGL_LIBS "-s FULL_ES2=1 -s MAX_WEBGL_VERSION=1"
 			;;
-		ios7)
+		ios5 | ios7)
 			_opengl_mode=gles2
 			_opengl_glad=yes
 			;;
@@ -8121,5 +8141,10 @@ fi
 copy_if_changed engines/engines.mk.new engines/engines.mk
 copy_if_changed engines/detection_table.h.new engines/detection_table.h
 copy_if_changed engines/plugins_table.h.new engines/plugins_table.h
+
+
+if test "$_host" = ios5 && test "${IOS5_REQUIRE_FULL:-0}" = 1; then
+	python3 "$_srcdir/dists/ios5/check_full.py" --source "$_srcdir" --build "`pwd`" || exit 1
+fi
 
 touch configure.stamp
