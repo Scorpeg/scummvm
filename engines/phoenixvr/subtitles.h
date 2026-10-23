@@ -31,9 +31,11 @@ class ManagedSurface;
 
 namespace PhoenixVR {
 
+class Renderer;
+
 class Subtitles : public Video::Subtitles {
 public:
-	explicit Subtitles(Graphics::ManagedSurface *target);
+	explicit Subtitles(Renderer *target);
 	~Subtitles() override;
 
 	void setBBox(const Common::Rect &bbox);
@@ -54,7 +56,7 @@ private:
 	void renderOutline();
 
 	static const int kOutlineWidth = 3;
-	Graphics::ManagedSurface *_target;
+	Renderer *_target;
 	mutable Graphics::Surface _outlined;
 	Common::Rect _bbox;
 	mutable Common::Rect _bounds;

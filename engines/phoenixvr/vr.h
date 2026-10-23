@@ -34,9 +34,11 @@ class Screen;
 
 namespace PhoenixVR {
 class RegionSet;
+class Renderer;
 class VR {
 	Common::ScopedPtr<Graphics::ManagedSurface> _pic;
 	bool _vr = false;
+	bool _gpuDirty = true;
 	struct Animation {
 		struct Frame {
 			Common::Array<byte> blockData;
@@ -57,7 +59,7 @@ class VR {
 		Common::String variable;
 		int variableValue = 0;
 		void renderNextFrame(Graphics::Surface &pic);
-		void render(Graphics::Surface &pic, float dt);
+		bool render(Graphics::Surface &pic, float dt);
 	};
 	Common::Array<Animation> _animations;
 	float _hint = 0;
@@ -68,16 +70,16 @@ class VR {
 
 public:
 	static VR loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStream &s);
-	void render(Graphics::Screen *screen, float ax, float ay, float fov, float dt, RegionSet *regSet);
+	void render(Renderer *renderer, float ax, float ay, float fov, float dt, RegionSet *regSet);
 	bool isVR() const { return _vr; }
 	void playAnimation(const Common::String &name, const Common::String &variable, int value, float speed);
 	void stopAnimation(const Common::String &name);
-	Graphics::Surface &getSurface() { return *_pic->surfacePtr(); }
+	Graphics::Surface &getSurface() { _gpuDirty = true; return *_pic->surfacePtr(); }
 	void showWaves() { _showWaves = true; }
 
 private:
 	template<typename ColorType>
-	void renderVR(Graphics::Screen *screen, float ax, float ay, float fov, float dt, RegionSet *regSet);
+	void renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, RegionSet *regSet);
 };
 } // namespace PhoenixVR
 
