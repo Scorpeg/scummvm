@@ -1,0 +1,12 @@
+#!/bin/sh
+case "${1:-}" in
+    remove)
+        if command -v uicache >/dev/null 2>&1; then
+            if command -v su >/dev/null 2>&1 && su mobile -c uicache; then
+                exit 0
+            fi
+            uicache || echo 'ScummVM: icon-cache refresh failed after removal.' >&2
+        fi
+        ;;
+esac
+exit 0
