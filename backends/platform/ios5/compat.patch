@@ -1,0 +1,2538 @@
+diff --git a/backends/fs/posix/posix-iostream.cpp b/backends/fs/posix/posix-iostream.cpp
+--- a/backends/fs/posix/posix-iostream.cpp
++++ b/backends/fs/posix/posix-iostream.cpp
+@@ -19,28 +19,59 @@
+  *
+  */
+ 
+ #define FORBIDDEN_SYMBOL_ALLOW_ALL
+ 
+ #include "backends/fs/posix/posix-iostream.h"
+ 
+ #include <sys/stat.h>
++#ifdef IPHONE_IOS5
++#include "backends/platform/ios5/metrics.h"
++#endif
+ 
+ PosixIoStream::PosixIoStream(void *handle) :
+ 		StdioStream(handle) {
+ }
+ 
+ int64 PosixIoStream::size() const {
++#ifdef IPHONE_IOS5
++	IOS5Metrics::FileScope trace("metadata", _traceName);
++#endif
+ 	int fd = fileno((FILE *)_handle);
+ 	if (fd == -1) {
+ 		return StdioStream::size();
+ 	}
+ 
+ 	// Using fstat to obtain the file size is generally faster than fseek / ftell
+ 	// because it does not affect the IO buffer.
+ 	struct stat st;
+ 	if (fstat(fd, &st) == -1) {
+ 		return StdioStream::size();
+ 	}
+ 
+ 	return st.st_size;
+ }
++
++#ifdef IPHONE_IOS5
++StdioStream *PosixIoStream::makeTracedStream(const Common::String &path, StdioStream::WriteMode mode) {
++	IOS5Metrics::FileScope trace("open", path.c_str());
++	StdioStream *stream = StdioStream::makeFromPathHelper(path, mode, [](void *handle) -> StdioStream * {
++		return new PosixIoStream(handle);
++	});
++	if (stream) {
++		PosixIoStream *file = static_cast<PosixIoStream *>(stream);
++		const char *base = strrchr(path.c_str(), '/');
++		strncpy(file->_traceName, base ? base + 1 : path.c_str(), sizeof(file->_traceName) - 1);
++	}
++	return stream;
++}
++uint32 PosixIoStream::read(void *data, uint32 size) {
++	IOS5Metrics::FileScope trace("read", _traceName);
++	const uint32 result = StdioStream::read(data, size);
++	trace.bytes(result);
++	return result;
++}
++bool PosixIoStream::seek(int64 offset, int whence) {
++	IOS5Metrics::FileScope trace("seek", _traceName);
++	return StdioStream::seek(offset, whence);
++}
++#endif
+diff --git a/backends/fs/posix/posix-iostream.h b/backends/fs/posix/posix-iostream.h
+--- a/backends/fs/posix/posix-iostream.h
++++ b/backends/fs/posix/posix-iostream.h
+@@ -25,18 +25,29 @@
+ #include "backends/fs/stdiostream.h"
+ 
+ /**
+  * A file input / output stream using POSIX interfaces
+  */
+ class PosixIoStream final : public StdioStream {
+ public:
+ 	static StdioStream *makeFromPath(const Common::String &path, StdioStream::WriteMode writeMode) {
++#ifdef IPHONE_IOS5
++		return makeTracedStream(path, writeMode);
++#else
+ 		return StdioStream::makeFromPathHelper(path, writeMode, [](void *handle) -> StdioStream * {
+ 			return new PosixIoStream(handle);
+ 		});
++#endif
+ 	}
+ 	PosixIoStream(void *handle);
+ 
+ 	int64 size() const override;
++#ifdef IPHONE_IOS5
++	uint32 read(void *data, uint32 size) override;
++	bool seek(int64 offset, int whence = SEEK_SET) override;
++private:
++	char _traceName[96] = {};
++	static StdioStream *makeTracedStream(const Common::String &path, StdioStream::WriteMode mode);
++#endif
+ };
+ 
+ #endif
+diff --git a/backends/graphics/ios/ios-graphics.cpp b/backends/graphics/ios/ios-graphics.cpp
+--- a/backends/graphics/ios/ios-graphics.cpp
++++ b/backends/graphics/ios/ios-graphics.cpp
+@@ -19,16 +19,23 @@
+  *
+  */
+ #define FORBIDDEN_SYMBOL_ALLOW_ALL
+ 
+ #include "backends/graphics/ios/ios-graphics.h"
+ #include "backends/graphics/ios/renderbuffer.h"
+ #include "backends/graphics/opengl/pipelines/pipeline.h"
+ #include "backends/platform/ios7/ios7_osys_main.h"
++#ifdef IPHONE_IOS5
++#include "backends/platform/ios5/dirty_copy.h"
++#include <stdio.h>
++#ifndef IOS5_DRAWING_NEON
++#error "The original iPad drawing build requires the ARMv7 NEON comparison path"
++#endif
++#endif
+ 
+ iOSGraphicsManager::iOSGraphicsManager() :
+ 	_insets{0, 0, 0, 0} {
+ 	initSurface();
+ }
+ 
+ iOSGraphicsManager::~iOSGraphicsManager() {
+ 	deinitSurface();
+@@ -39,42 +46,71 @@
+ 
+ 	// Create OpenGL context
+ 	GLuint rbo = sys->createOpenGLContext();
+ 
+ 	notifyContextCreate(OpenGL::kContextGLES2,
+ 	new OpenGL::RenderbufferTarget(rbo),
+ 	OpenGL::Texture::getRGBAPixelFormat(),
+ 	OpenGL::Texture::getRGBAPixelFormat());
++
++#ifdef IPHONE_IOS5
++	fprintf(stderr, "ios5: texture upload preference=%s apple_bgra=%d npot=%d compare=neon64\n",
++		OpenGLContext.appleBgraSupported ? "BGRA8888" : "RGBA8888",
++		OpenGLContext.appleBgraSupported, OpenGLContext.NPOTSupported);
++#endif
+ 	handleResize(sys->getScreenWidth(), sys->getScreenHeight());
+ 
+ 	_old_touch_mode = kTouchModeTouchpad;
+ 
+-	_rendering3d = (_renderer3d != nullptr);
++	_rendering3d = (has3DRenderer());
+ 	// maybe in 3D, not in GUI
+ 	sys->applyTouchSettings(_rendering3d, false);
+ }
+ 
+ void iOSGraphicsManager::deinitSurface() {
+ 	notifyContextDestroy();
+ 	dynamic_cast<OSystem_iOS7 *>(g_system)->destroyOpenGLContext();
+ }
+ 
+ void iOSGraphicsManager::notifyResize(const int width, const int height) {
++#ifdef IPHONE_IOS5
++	if (width <= 0 || height <= 0 || (width == _windowWidth && height == _windowHeight))
++		return;
++#endif
+ 	handleResize(width, height);
++#ifdef IPHONE_IOS5
++	fprintf(stderr, "ios5: display resize drawable=%dx%d overlay=%dx%d\n",
++		width, height, getOverlayWidth(), getOverlayHeight());
++#endif
+ }
++
++#ifdef IPHONE_IOS5
++void iOSGraphicsManager::recalculateDisplayAreas() {
++	OpenGL::OpenGLGraphicsManager::recalculateDisplayAreas();
++	if (getOverlayWidth() != _windowWidth || getOverlayHeight() != _windowHeight ||
++		(_rotationMode != Common::kRotationNormal && _rotationMode != Common::kRotation180))
++		return;
++	_overlayDrawRect = Common::Rect(_windowWidth, _windowHeight);
++	if (_overlayInGUI) {
++		_activeArea.drawRect = _overlayDrawRect;
++		_activeArea.width = getOverlayWidth();
++		_activeArea.height = getOverlayHeight();
++	}
++}
++#endif
+ 
+ bool iOSGraphicsManager::loadVideoMode(uint requestedWidth, uint requestedHeight, bool resizable, int antialiasing) {
+ 	// As GLES2 provides FBO, OpenGL graphics manager must ask us for a resizable surface
+ 	assert(resizable);
+ 	if (antialiasing != 0) {
+ 		warning("Requesting antialiased video mode while not available");
+ 	}
+ 
+-	const bool render3d = (_renderer3d != nullptr);
++	const bool render3d = (has3DRenderer());
+ 	if (_rendering3d != render3d) {
+ 		_rendering3d = render3d;
+ 	}
+ 	// 3D status may have changed: refresh the touch mode
+ 	applyTouchSettings();
+ 
+ 
+ 	/* The iOS and tvOS video modes are always full screen */
+@@ -84,37 +120,43 @@
+ void iOSGraphicsManager::showOverlay(bool inGUI) {
+ 	if (_overlayVisible && inGUI == _overlayInGUI)
+ 		return;
+ 
+ 	// Don't change touch mode when not changing mouse coordinates
+ 	if (inGUI) {
+ 		_old_touch_mode = dynamic_cast<OSystem_iOS7 *>(g_system)->getCurrentTouchMode();
+ 		// maybe in 3D, in overlay
+-		dynamic_cast<OSystem_iOS7 *>(g_system)->applyTouchSettings(_renderer3d != nullptr, true);
++		dynamic_cast<OSystem_iOS7 *>(g_system)->applyTouchSettings(has3DRenderer(), true);
+ 	} else if (_overlayInGUI) {
+ 		// Restore touch mode active before overlay was shown
+ 		dynamic_cast<OSystem_iOS7 *>(g_system)->setCurrentTouchMode(static_cast<TouchMode>(_old_touch_mode));
+ 	}
+ 
+ 	OpenGL::OpenGLGraphicsManager::showOverlay(inGUI);
++#ifdef IPHONE_IOS5
++	if (inGUI)
++		fprintf(stderr, "ios5: GUI overlay=%dx%d destination=%dx%d drawable=%dx%d hidpi=%.2f\n",
++			getOverlayWidth(), getOverlayHeight(), _overlayDrawRect.width(), _overlayDrawRect.height(),
++			_windowWidth, _windowHeight, (double)getHiDPIScreenFactor());
++#endif
+ }
+ 
+ void iOSGraphicsManager::hideOverlay() {
+ 	if (_overlayInGUI) {
+ 		// Restore touch mode active before overlay was shown
+ 		dynamic_cast<OSystem_iOS7 *>(g_system)->setCurrentTouchMode(static_cast<TouchMode>(_old_touch_mode));
+ 	}
+ 
+ 	OpenGL::OpenGLGraphicsManager::hideOverlay();
+ }
+ 
+ void iOSGraphicsManager::applyTouchSettings() const {
+ 	// maybe in 3D, maybe in GUI
+-	dynamic_cast<OSystem_iOS7 *>(g_system)->applyTouchSettings(_renderer3d != nullptr, _overlayVisible && _overlayInGUI);
++	dynamic_cast<OSystem_iOS7 *>(g_system)->applyTouchSettings(has3DRenderer(), _overlayVisible && _overlayInGUI);
+ }
+ 
+ float iOSGraphicsManager::getHiDPIScreenFactor() const {
+ 	return dynamic_cast<OSystem_iOS7 *>(g_system)->getSystemHiDPIScreenFactor();
+ }
+ 
+ void iOSGraphicsManager::refreshScreen() {
+ 	dynamic_cast<OSystem_iOS7 *>(g_system)->refreshScreen();
+diff --git a/backends/graphics/ios/ios-graphics.h b/backends/graphics/ios/ios-graphics.h
+--- a/backends/graphics/ios/ios-graphics.h
++++ b/backends/graphics/ios/ios-graphics.h
+@@ -42,16 +42,26 @@
+ 	Common::Point getMousePosition() { return Common::Point(_cursorX, _cursorY); }
+ 
+ 	float getHiDPIScreenFactor() const override;
+ 
+ 	void setSafeAreaInsets(int l, int r, int t, int b) { _insets.left = l; _insets.top = t; _insets.right = r; _insets.bottom = b; }
+ 	WindowedGraphicsManager::Insets getSafeAreaInsets() const override { return _insets; }
+ 
+ protected:
++#ifdef IPHONE_IOS5
++	void recalculateDisplayAreas() override;
++#endif
++	bool has3DRenderer() const {
++#if defined(USE_OPENGL_GAME) || defined(USE_OPENGL_SHADERS)
++		return _renderer3d != nullptr;
++#else
++		return false;
++#endif
++	}
+ 	void setSystemMousePosition(const int x, const int y) override {}
+ 
+ 	bool loadVideoMode(uint requestedWidth, uint requestedHeight, bool resizable, int antialiasing) override;
+ 	void showOverlay(bool inGUI) override;
+ 	void hideOverlay() override;
+ 	void applyTouchSettings() const;
+ 
+ 	void refreshScreen() override;
+diff --git a/backends/graphics/opengl/opengl-graphics.cpp b/backends/graphics/opengl/opengl-graphics.cpp
+--- a/backends/graphics/opengl/opengl-graphics.cpp
++++ b/backends/graphics/opengl/opengl-graphics.cpp
+@@ -15,16 +15,17 @@
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  *
+  */
+ 
+ 
++#include "backends/platform/ios5/metrics.h"
+ #include "backends/graphics/opengl/opengl-graphics.h"
+ #include "backends/graphics/opengl/texture.h"
+ #include "backends/graphics/opengl/pipelines/pipeline.h"
+ #include "backends/graphics/opengl/pipelines/fixed.h"
+ #include "backends/graphics/opengl/pipelines/shader.h"
+ #include "backends/graphics/opengl/pipelines/libretro.h"
+ #include "backends/graphics/opengl/shader.h"
+ #include "graphics/opengl/debug.h"
+@@ -254,16 +255,23 @@
+ 	// OpenGL and OpenGL ES implementations. Thus, we need to supply different
+ 	// logical formats based on endianness.
+ 
+ 	// ABGR8888/RGBA8888
+ 	formats.push_back(OpenGL::Texture::getRGBAPixelFormat());
+ 
+ 	if (OpenGLContext.bgraSupported) {
+ 		// ARGB8888/BGRA8888
++#ifdef IPHONE_IOS5
++
++
++		if (OpenGLContext.appleBgraSupported)
++			formats.push_front(OpenGL::Texture::getBGRAPixelFormat());
++		else
++#endif
+ 		formats.push_back(OpenGL::Texture::getBGRAPixelFormat());
+ 	}
+ 
+ 	// TODO: Limit these formats to implementations that support them -
+ 	// currently the Kyra, SCUMM and Trecision engines expect at least
+ 	// one 16bpp format in this list.
+ 
+ 	// RGB565
+@@ -769,28 +777,32 @@
+ 	}
+ 
+ #if defined(USE_OPENGL_GAME) || defined(USE_OPENGL_SHADERS)
+ 	if (_renderer3d) {
+ 		_renderer3d->leave3D();
+ 	}
+ #endif
+ 
++	static IOS5Metrics::Metric drawMetric("draw_upload");
++	const uint64_t drawStart = IOS5Metrics::nowUS();
+ 	// Update changes to textures.
+ 	if (_gameScreen) {
+ 		_gameScreen->updateGLTexture();
+ 	}
+ 
+ 	if (_cursorVisible && _cursor) {
+ 		_cursor->updateGLTexture();
+ 	}
+ 	if (_cursorVisible && _cursorMask) {
+ 		_cursorMask->updateGLTexture();
+ 	}
+ 	_overlay->updateGLTexture();
++	static IOS5Metrics::Metric commandsMetric("draw_commands");
++	const uint64_t commandsStart = IOS5Metrics::nowUS();
+ 
+ #if !USE_FORCED_GLES
+ 	if (_libretroPipeline) {
+ 		_libretroPipeline->beginScaling();
+ 	}
+ #endif
+ 
+ 	_pipeline->activate();
+@@ -938,16 +950,19 @@
+ 		// Draw the OSD icon texture.
+ 		_pipeline->drawTexture(_osdIconSurface->getGLTexture(),
+ 		                       dstX, dstY, osdWidth, osdHeight);
+ 	}
+ #endif
+ 
+ 	_cursorNeedsRedraw = false;
+ 	_forceRedraw = false;
++	const uint64_t drawEnd = IOS5Metrics::nowUS();
++	commandsMetric.record(commandsStart, drawEnd);
++	drawMetric.record(drawStart, drawEnd);
+ 	refreshScreen();
+ 
+ #if defined(USE_OPENGL_GAME) || defined(USE_OPENGL_SHADERS)
+ 	if (_renderer3d) {
+ 		_renderer3d->enter3D();
+ 	}
+ #endif
+ }
+@@ -1712,16 +1727,20 @@
+ 		const Graphics::PixelFormat &virtFormat = wantAlpha ? _defaultFormatAlpha : _defaultFormat;
+ 		const bool supported = getGLPixelFormat(virtFormat, glIntFormat, glFormat, glType);
+ 		if (!supported) {
+ 			return nullptr;
+ 		} else {
+ 			return new FakeTextureSurface(glIntFormat, glFormat, glType, virtFormat, format);
+ 		}
+ 	} else if (getGLPixelFormat(format, glIntFormat, glFormat, glType)) {
++#ifdef IPHONE_IOS5
++		if (format == Texture::getBGRAPixelFormat() && OpenGLContext.appleBgraSupported)
++			return new IOS5TextureSurface(glIntFormat, glFormat, glType, format);
++#endif
+ 		return new TextureSurface(glIntFormat, glFormat, glType, format);
+ 	} else if (OpenGLContext.packedPixelsSupported && format == Graphics::PixelFormat(2, 5, 5, 5, 0, 10, 5, 0, 0)) {
+ 		// OpenGL ES does not support a texture format usable for RGB555.
+ 		// Since SCUMM uses this pixel format for some games (and there is no
+ 		// hope for this to change anytime soon) we use pixel format
+ 		// conversion to a supported texture format.
+ 		return new FakeTextureSurface(GL_RGB, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, Graphics::PixelFormat(2, 5, 6, 5, 0, 11, 5, 0, 0), format);
+ 	} else {
+@@ -1736,16 +1755,21 @@
+ 		glType = GL_UNSIGNED_BYTE;
+ 		return true;
+ 	} else if (pixelFormat == OpenGL::Texture::getRGBPixelFormat()) { // BGR888 / RGB888
+ 		glIntFormat = GL_RGB;
+ 		glFormat = GL_RGB;
+ 		glType = GL_UNSIGNED_BYTE;
+ 		return true;
+ 	} else if (OpenGLContext.bgraSupported && pixelFormat == OpenGL::Texture::getBGRAPixelFormat()) { // ARGB8888 / BGRA8888
++#ifdef IPHONE_IOS5
++		if (OpenGLContext.appleBgraSupported)
++			glIntFormat = GL_RGBA;
++		else
++#endif
+ 		glIntFormat = isGLESContext() ? GL_BGRA : GL_RGBA;
+ 		glFormat = GL_BGRA;
+ 		glType = GL_UNSIGNED_BYTE;
+ 		return true;
+ 	} else if (!OpenGLContext.packedPixelsSupported) {
+ 		return false;
+ 	} else if (pixelFormat == Graphics::PixelFormat(2, 5, 6, 5, 0, 11, 5, 0, 0)) { // RGB565
+ 		glIntFormat = GL_RGB;
+diff --git a/backends/graphics/opengl/texture.cpp b/backends/graphics/opengl/texture.cpp
+--- a/backends/graphics/opengl/texture.cpp
++++ b/backends/graphics/opengl/texture.cpp
+@@ -27,16 +27,20 @@
+ #include "graphics/opengl/debug.h"
+ 
+ #include "common/algorithm.h"
+ #include "common/endian.h"
+ #include "common/rect.h"
+ #include "common/textconsole.h"
+ 
+ #include "graphics/blit.h"
++#ifdef IPHONE_IOS5
++#include "backends/platform/ios5/dirty_copy.h"
++#include "backends/platform/ios5/metrics.h"
++#endif
+ 
+ #ifdef USE_SCALERS
+ #include "graphics/scalerplugin.h"
+ #endif
+ 
+ namespace OpenGL {
+ 
+ //
+@@ -47,32 +51,44 @@
+ 	: _allDirty(false), _dirtyArea() {
+ }
+ 
+ void Surface::copyRectToTexture(uint x, uint y, uint w, uint h, const void *srcPtr, uint srcPitch) {
+ 	Graphics::Surface *dstSurf = getSurface();
+ 	assert(x + w <= (uint)dstSurf->w);
+ 	assert(y + h <= (uint)dstSurf->h);
+ 
+-	addDirtyArea(Common::Rect(x, y, x + w, y + h));
+-
+ 	const byte *src = (const byte *)srcPtr;
+ 	byte *dst = (byte *)dstSurf->getBasePtr(x, y);
+ 	const uint pitch = dstSurf->pitch;
+ 	const uint bytesPerPixel = dstSurf->format.bytesPerPixel;
++
++#ifdef IPHONE_IOS5
++
++
++	static IOS5Metrics::Metric copyMetric("texture_copy");
++	const uint64_t start = IOS5Metrics::nowUS();
++	const IOS5Drawing::ChangedRows changed = IOS5Drawing::copyChangedRows(
++		dst, pitch, src, srcPitch, w * bytesPerPixel, h);
++	copyMetric.record(start, IOS5Metrics::nowUS(), changed.copiedBytes);
++	if (!changed.empty())
++		addDirtyArea(Common::Rect(x, y + changed.first, x + w, y + changed.end));
++#else
++	addDirtyArea(Common::Rect(x, y, x + w, y + h));
+ 
+ 	if (srcPitch == pitch && x == 0 && w == (uint)dstSurf->w) {
+ 		memcpy(dst, src, h * pitch);
+ 	} else {
+ 		while (h-- > 0) {
+ 			memcpy(dst, src, w * bytesPerPixel);
+ 			dst += pitch;
+ 			src += srcPitch;
+ 		}
+ 	}
++#endif
+ }
+ 
+ void Surface::fill(uint32 color) {
+ 	Graphics::Surface *dst = getSurface();
+ 	dst->fillRect(Common::Rect(dst->w, dst->h), color);
+ 
+ 	flagDirty();
+ }
+@@ -200,16 +216,116 @@
+ 		}
+ 	}
+ 
+ 	_glTexture.updateArea(dirtyArea, _textureData);
+ 
+ 	// We should have handled everything, thus not dirty anymore.
+ 	clearDirty();
+ }
++
++#ifdef IPHONE_IOS5
++IOS5TextureSurface::IOS5TextureSurface(GLenum internal, GLenum format, GLenum type, const Graphics::PixelFormat &pf)
++	: TextureSurface(internal, format, type, pf), _shared(nullptr),
++	  _sharedGL(internal, format, type, false), _linear(false), _rotation(Common::kRotationNormal) {}
++
++IOS5TextureSurface::~IOS5TextureSurface() { releaseShared(); }
++
++void IOS5TextureSurface::releaseShared() {
++
++	_sharedGL.setSharedName(0, 1, 1, nullptr);
++	ios5SharedDestroy(_shared);
++	_shared = nullptr;
++	_sharedSurface.init(0, 0, 0, nullptr, _format);
++}
++
++void IOS5TextureSurface::allocate(uint width, uint height) {
++	if (_shared && width == (uint)_sharedSurface.w && height == (uint)_sharedSurface.h) return;
++	releaseShared();
++	_shared = ios5SharedCreate(width, height);
++	if (!_shared) {
++		TextureSurface::allocate(width, height);
++		return;
++	}
++	void *pixels; size_t pitch;
++	if (!ios5SharedLock(_shared, &pixels, &pitch)) error("iOS5 shared surface initial lock failed");
++	_sharedSurface.init(width, height, pitch, pixels, _format);
++	_sharedGL.setSharedName(ios5SharedName(_shared), width, height, ios5SharedCoords(_shared));
++	flagDirty();
++}
++
++Graphics::Surface *IOS5TextureSurface::getSurface() {
++	if (!_shared) return TextureSurface::getSurface();
++	void *pixels; size_t pitch;
++	if (!ios5SharedLock(_shared, &pixels, &pitch)) error("iOS5 shared surface CPU lock failed");
++	_sharedSurface.init(_sharedSurface.w, _sharedSurface.h, pitch, pixels, _format);
++	return &_sharedSurface;
++}
++
++const Graphics::Surface *IOS5TextureSurface::getSurface() const {
++	return const_cast<IOS5TextureSurface *>(this)->getSurface();
++}
++
++void IOS5TextureSurface::copyRectToTexture(uint x, uint y, uint w, uint h, const void *src, uint srcPitch) {
++	if (!_shared) { Surface::copyRectToTexture(x, y, w, h, src, srcPitch); return; }
++
++
++	static IOS5Metrics::Metric copyMetric("texture_copy");
++	IOS5Metrics::Scope scope(copyMetric, uint64_t(w) * h * _format.bytesPerPixel);
++	getSurface()->copyRectToSurface(src, srcPitch, x, y, w, h);
++	addDirtyArea(Common::Rect(x, y, x + w, y + h));
++}
++
++void IOS5TextureSurface::updateGLTexture() {
++	if (!_shared) { TextureSurface::updateGLTexture(); return; }
++
++
++	static IOS5Metrics::Metric publishMetric("shared_publish");
++	IOS5Metrics::Scope scope(publishMetric);
++	if (!ios5SharedPublish(_shared, _linear ? GL_LINEAR : GL_NEAREST))
++		error("iOS5 shared surface GPU publish failed");
++	_sharedGL.setSharedName(ios5SharedName(_shared), _sharedSurface.w, _sharedSurface.h, ios5SharedCoords(_shared));
++	clearDirty();
++}
++
++void IOS5TextureSurface::enableLinearFiltering(bool enable) {
++	_linear = enable;
++	TextureSurface::enableLinearFiltering(enable);
++}
++
++void IOS5TextureSurface::setRotation(Common::RotationMode rotation) {
++	_rotation = rotation;
++	_sharedGL.setRotation(rotation);
++	if (_shared) _sharedGL.setSharedName(ios5SharedName(_shared), _sharedSurface.w, _sharedSurface.h, ios5SharedCoords(_shared));
++	TextureSurface::setRotation(rotation);
++}
++
++void IOS5TextureSurface::destroy() {
++	if (_shared) {
++
++		const Graphics::Surface *src = getSurface();
++		TextureSurface::allocate(src->w, src->h);
++		TextureSurface::getSurface()->copyRectToSurface(src->getPixels(), src->pitch, 0, 0, src->w, src->h);
++		releaseShared();
++	}
++	TextureSurface::destroy();
++}
++
++void IOS5TextureSurface::recreate() {
++	TextureSurface::recreate();
++	Graphics::Surface *saved = TextureSurface::getSurface();
++	if (!saved->getPixels()) return;
++	allocate(saved->w, saved->h);
++	if (_shared) {
++		getSurface()->copyRectToSurface(saved->getPixels(), saved->pitch, 0, 0, saved->w, saved->h);
++		setRotation(_rotation);
++	}
++	flagDirty();
++}
++#endif
+ 
+ FakeTextureSurface::FakeTextureSurface(GLenum glIntFormat, GLenum glFormat, GLenum glType, const Graphics::PixelFormat &format, const Graphics::PixelFormat &fakeFormat)
+ 	: TextureSurface(glIntFormat, glFormat, glType, format),
+ 	  _fakeFormat(fakeFormat),
+ 	  _rgbData(),
+ 	  _blitFunc(nullptr),
+ 	  _palette(nullptr),
+ 	  _mask(nullptr) {
+diff --git a/backends/graphics/opengl/texture.h b/backends/graphics/opengl/texture.h
+--- a/backends/graphics/opengl/texture.h
++++ b/backends/graphics/opengl/texture.h
+@@ -27,16 +27,19 @@
+ #include "graphics/opengl/texture.h"
+ 
+ #include "graphics/pixelformat.h"
+ #include "graphics/surface.h"
+ #include "graphics/blit.h"
+ 
+ #include "common/rect.h"
+ #include "common/rotationmode.h"
++#ifdef IPHONE_IOS5
++#include "backends/platform/ios5/shared_texture.h"
++#endif
+ 
+ class Scaler;
+ 
+ namespace OpenGL {
+ 
+ /**
+  * Interface for OpenGL implementations of a 2D surface.
+  */
+@@ -92,17 +95,17 @@
+ 	 *
+ 	 * @param x        X coordinate of upper left corner to copy data to.
+ 	 * @param y        Y coordinate of upper left corner to copy data to.
+ 	 * @param w        Width of the image data to copy.
+ 	 * @param h        Height of the image data to copy.
+ 	 * @param src      Pointer to image data.
+ 	 * @param srcPitch The number of bytes in a row of the image data.
+ 	 */
+-	void copyRectToTexture(uint x, uint y, uint w, uint h, const void *src, uint srcPitch);
++	virtual void copyRectToTexture(uint x, uint y, uint w, uint h, const void *src, uint srcPitch);
+ 
+ 	/**
+ 	 * Fill the surface with a fixed color.
+ 	 *
+ 	 * @param color Color value in format returned by getFormat.
+ 	 */
+ 	void fill(uint32 color);
+ 	void fill(const Common::Rect &r, uint32 color);
+@@ -202,16 +205,44 @@
+ 	void updateGLTexture(Common::Rect &dirtyArea);
+ 
+ private:
+ 	Texture _glTexture;
+ 
+ 	Graphics::Surface _textureData;
+ 	Graphics::Surface _userPixelData;
+ };
++
++#ifdef IPHONE_IOS5
++
++class IOS5TextureSurface : public TextureSurface {
++public:
++	IOS5TextureSurface(GLenum internal, GLenum format, GLenum type, const Graphics::PixelFormat &pf);
++	~IOS5TextureSurface() override;
++	void allocate(uint width, uint height) override;
++	void destroy() override;
++	void recreate() override;
++	void enableLinearFiltering(bool enable) override;
++	void setRotation(Common::RotationMode rotation) override;
++	uint getWidth() const override { return _shared ? _sharedSurface.w : TextureSurface::getWidth(); }
++	uint getHeight() const override { return _shared ? _sharedSurface.h : TextureSurface::getHeight(); }
++	Graphics::Surface *getSurface() override;
++	const Graphics::Surface *getSurface() const override;
++	void copyRectToTexture(uint x, uint y, uint w, uint h, const void *src, uint srcPitch) override;
++	void updateGLTexture() override;
++	const Texture &getGLTexture() const override { return _shared ? _sharedGL : TextureSurface::getGLTexture(); }
++private:
++	void releaseShared();
++	IOS5SharedTexture *_shared;
++	Graphics::Surface _sharedSurface;
++	Texture _sharedGL;
++	bool _linear;
++	Common::RotationMode _rotation;
++};
++#endif
+ 
+ class FakeTextureSurface : public TextureSurface {
+ public:
+ 	FakeTextureSurface(GLenum glIntFormat, GLenum glFormat, GLenum glType, const Graphics::PixelFormat &format, const Graphics::PixelFormat &fakeFormat);
+ 	~FakeTextureSurface() override;
+ 
+ 	void allocate(uint width, uint height) override;
+ 	void setMask(const byte *mask) override;
+diff --git a/backends/module.mk b/backends/module.mk
+--- a/backends/module.mk
++++ b/backends/module.mk
+@@ -462,18 +462,20 @@
+ 	fs/posix-drives/posix-drives-fs.o \
+ 	fs/posix-drives/posix-drives-fs-factory.o \
+ 	fs/devoptab/devoptab-fs-factory.o \
+ 	mixer/maxmod/maxmod-mixer.o \
+ 	plugins/ds/ds-provider.o
+ endif
+ 
+ ifdef IPHONE
+-MODULE_OBJS += \
+-	midi/coremidi.o \
++ifndef IPHONE_IOS5
++MODULE_OBJS += midi/coremidi.o
++endif
++MODULE_OBJS += \
+ 	mutex/pthread/pthread-mutex.o \
+ 	graphics/ios/ios-graphics.o \
+ 	graphics/ios/renderbuffer.o
+ 
+ ifdef USE_TTS
+ MODULE_OBJS += \
+ 	text-to-speech/avfaudio/avfaudio-text-to-speech.o
+ endif
+diff --git a/backends/platform/ios7/ios7_app_delegate.mm b/backends/platform/ios7/ios7_app_delegate.mm
+--- a/backends/platform/ios7/ios7_app_delegate.mm
++++ b/backends/platform/ios7/ios7_app_delegate.mm
+@@ -46,38 +46,46 @@
+ 	// Create the directory for savegames
+ 	NSFileManager *fm = [NSFileManager defaultManager];
+ 	NSString *documentPath = [NSString stringWithUTF8String:iOS7_getDocumentsDir().c_str()];
+ 	NSString *savePath = [documentPath stringByAppendingPathComponent:@"Savegames"];
+ 	if (![fm fileExistsAtPath:savePath]) {
+ 		[fm createDirectoryAtPath:savePath withIntermediateDirectories:YES attributes:nil error:nil];
+ 	}
+ 
++	[fm createDirectoryAtPath:@"/var/mobile/ScummVM"
++	 withIntermediateDirectories:YES attributes:nil error:nil];
++
+ 	_controller = [[iOS7ScummVMViewController alloc] init];
+ 
+ 	_view = [[iPhoneView alloc] initWithFrame:rect];
+ #if TARGET_OS_IOS
+ 	// This property does not affect the gesture recognizers attached to the view.
+ 	// Gesture recognizers receive all touches that occur in the view.
+ 	_view.multipleTouchEnabled = NO;
+ #endif
+ 	_controller.view = _view;
+ 
++#ifndef IPHONE_IOS5
+ 	if (@available(iOS 13.0, *)) {
+ 		// iOS13 and later uses of UIScene.
+ 		// The keyWindow is setup by iOS7SceneDelegate
+-	} else {
++	} else
++#endif
++	{
+ 		[iOS7AppDelegate setKeyWindow:[[UIWindow alloc] initWithFrame:rect]];
+ 	}
+ 
+ 	// Force creation of the shared instance on the main thread
+ 	iOS7_buildSharedOSystemInstance();
+ 
+ 	dispatch_async(dispatch_get_global_queue(0, 0), ^{
++		NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+ 		iOS7_main(iOS7_argc, iOS7_argv);
++		[pool drain];
+ 	});
+ 
+ 	if (_restoreState)
+ 		[_view restoreApplicationState];
+ 	else
+ 		[_view clearApplicationState];
+ }
+ 
+diff --git a/backends/platform/ios7/ios7_keyboard.mm b/backends/platform/ios7/ios7_keyboard.mm
+--- a/backends/platform/ios7/ios7_keyboard.mm
++++ b/backends/platform/ios7/ios7_keyboard.mm
+@@ -67,22 +67,26 @@
+ 			item.leadingBarButtonGroups = @[];
+ 			item.trailingBarButtonGroups = @[];
+ 		}
+ 	}
+ #endif
+ #endif
+ 
+ 	toolbar = [[UITabBar alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 0.0f, 0.0f)];
++#ifndef IPHONE_IOS5
+ 	toolbar.barTintColor = keyboard.backgroundColor;
++#endif
+ 	toolbar.tintColor = [UIColor grayColor];
++#ifndef IPHONE_IOS5
+ 	toolbar.translucent = NO;
++#endif
+ 	toolbar.delegate = self;
+ 
+-	toolbar.items = @[
++	toolbar.items = [NSArray arrayWithObjects:
+ 		// Keyboard layout button
+ 		[[[UITabBarItem alloc] initWithTitle:@"123" image:nil tag:0] autorelease],
+ 		// GMM button
+ 		[[[UITabBarItem alloc] initWithTitle:@"\u2630" image:nil tag:1] autorelease],
+ 		// Escape key
+ 		[[[UITabBarItem alloc] initWithTitle:@"Esc" image:nil tag:2] autorelease],
+ 		// Tab key
+ 		[[[UITabBarItem alloc] initWithTitle:@"Tab" image:nil tag:3] autorelease],
+@@ -100,22 +104,22 @@
+ 		[[[UITabBarItem alloc] initWithTitle:@"F9" image:nil tag:13] autorelease],
+ 		[[[UITabBarItem alloc] initWithTitle:@"F10" image:nil tag:14] autorelease],
+ 		[[[UITabBarItem alloc] initWithTitle:@"F11" image:nil tag:15] autorelease],
+ 		[[[UITabBarItem alloc] initWithTitle:@"F12" image:nil tag:16] autorelease],
+ 		// Arrow keys
+ 		[[[UITabBarItem alloc] initWithTitle:@"\u2190" image:nil tag:17] autorelease],
+ 		[[[UITabBarItem alloc] initWithTitle:@"\u2191" image:nil tag:18] autorelease],
+ 		[[[UITabBarItem alloc] initWithTitle:@"\u2192" image:nil tag:19] autorelease],
+-		[[[UITabBarItem alloc] initWithTitle:@"\u2193" image:nil tag:20] autorelease]
++		[[[UITabBarItem alloc] initWithTitle:@"\u2193" image:nil tag:20] autorelease], nil
+ 	];
+ 
+ 	// Increase the font size on the UITabBarItems to make them readable on small displays
+ 	for (UITabBarItem *item in toolbar.items) {
+-		[item setTitleTextAttributes: [NSDictionary dictionaryWithObjectsAndKeys: [UIFont fontWithName:@"Helvetica" size:20.0], NSFontAttributeName, nil] forState:UIControlStateNormal];
++		[item setTitleTextAttributes: [NSDictionary dictionaryWithObjectsAndKeys: [UIFont fontWithName:@"Helvetica" size:20.0], UITextAttributeFont, nil] forState:UIControlStateNormal];
+ 	}
+ 
+ #if TARGET_OS_TV
+ 	// In tvOS a UITabBarItem is selected when moving to the selected item, in other words
+ 	// no click is required. This is not a great user experience since the user needs to
+ 	// scroll to the wanted UITabBarItem causing the delegate function
+ 	// tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item to be called multiple
+ 	// times. Instead add a tap gesture on the UITabBar and let the delegate function set
+@@ -262,16 +266,17 @@
+ 	[self reloadInputViews];
+ }
+ 
+ - (void)detachAccessoryView {
+ 	self.inputAccessoryView = nil;
+ 	[self reloadInputViews];
+ }
+ 
++#ifndef IPHONE_IOS5
+ - (void) setWantsPriority: (UIKeyCommand*) keyCommand {
+ 	// In iOS 15 the UIKeyCommand has a new property wantsPriorityOverSystemBehavior that is needed to
+ 	// receive some keys (such as the arrow keys).
+ 	if ([keyCommand respondsToSelector:@selector(setWantsPriorityOverSystemBehavior:)]) {
+ 		[keyCommand setValue:[NSNumber numberWithBool:YES] forKey:@"wantsPriorityOverSystemBehavior"];
+ 	}
+ }
+ 
+@@ -526,16 +531,18 @@
+ 		[softKeyboard handleKeyPress:Common::KEYCODE_RIGHT withModifierFlags:[self convertModifierFlags:keyCommand.modifierFlags]];
+ 	}
+ }
+ 
+ - (void) escapeKey: (UIKeyCommand *) keyCommand {
+ 	[softKeyboard handleKeyPress:Common::KEYCODE_ESCAPE withModifierFlags:0];
+ }
+ 
++#endif
++
+ - (void) mainMenuKey {
+ 	[softKeyboard handleMainMenuKey];
+ }
+ 
+ - (void) escapeKey {
+ 	[softKeyboard handleKeyPress:Common::KEYCODE_ESCAPE withModifierFlags:0];
+ }
+ 
+@@ -628,16 +635,19 @@
+ @implementation SoftKeyboard {
+ 	BOOL _keyboardVisible;
+ 	CGFloat _inputAccessoryHeight;
+ }
+ 
+ #if TARGET_OS_IOS
+ - (void)resizeParentFrame:(NSNotification*)notification keyboardDidShow:(BOOL)didShow
+ {
++#ifdef IPHONE_IOS5
++	return;
++#endif
+ 	NSDictionary* userInfo = [notification userInfo];
+ 	CGRect keyboardFrame = [[userInfo objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue];
+ 	keyboardFrame = [self.superview convertRect:keyboardFrame fromView:nil];
+ 
+ 	// Base the new frame size on the current parent frame size
+ 	CGRect newFrame = self.superview.frame;
+ #ifdef __IPHONE_14_0
+ 	if (@available(iOS 14.0, tvOS 14.0, *)) {
+@@ -653,17 +663,17 @@
+ 		} else {
+ 			newFrame.size.height += (keyboardFrame.size.height) * (didShow ? -1 : 1);
+ 		}
+ 	} else {
+ 		newFrame.size.height += (keyboardFrame.size.height) * (didShow ? -1 : 1);
+ 	}
+ #endif
+ 	// Resize with a fancy animation
+-	NSNumber *rate = notification.userInfo[UIKeyboardAnimationDurationUserInfoKey];
++	NSNumber *rate = [notification.userInfo objectForKey:UIKeyboardAnimationDurationUserInfoKey];
+ 	[UIView animateWithDuration:rate.floatValue animations:^{
+ 		self.superview.frame = newFrame;
+ 	}];
+ }
+ 
+ - (void)keyboardDidShow:(NSNotification*)notification
+ {
+ 	// NotificationCenter might notify multiple times
+diff --git a/backends/platform/ios7/ios7_misc.mm b/backends/platform/ios7/ios7_misc.mm
+--- a/backends/platform/ios7/ios7_misc.mm
++++ b/backends/platform/ios7/ios7_misc.mm
+@@ -24,22 +24,26 @@
+ #include <Foundation/NSFileManager.h>
+ #include <Foundation/NSBundle.h>
+ #include <Foundation/NSPathUtilities.h>
+ 
+ #include "backends/platform/ios7/ios7_common.h"
+ #include "common/str.h"
+ 
+ Common::String iOS7_getDocumentsDir() {
+-#if TARGET_OS_IOS
+-	NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] firstObject];
++#ifdef IPHONE_IOS5
++	return Common::String("/var/mobile/Library/ScummVM.iOS5");
++#elif TARGET_OS_IOS
++	NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] objectAtIndex:0];
+ #else
+-	NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
++	NSURL *url = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] objectAtIndex:0];
+ #endif
+-	return Common::String([url fileSystemRepresentation]);
++#ifndef IPHONE_IOS5
++	return Common::String([[url path] fileSystemRepresentation]);
++#endif
+ }
+ 
+ Common::String iOS7_getAppBundleDir() {
+ 	NSString *bundlePath = [[NSBundle mainBundle] resourcePath];
+ 	if (bundlePath == nil)
+ 		return Common::String();
+ 	return Common::String([bundlePath fileSystemRepresentation]);
+ }
+diff --git a/backends/platform/ios7/ios7_osys_events.cpp b/backends/platform/ios7/ios7_osys_events.cpp
+--- a/backends/platform/ios7/ios7_osys_events.cpp
++++ b/backends/platform/ios7/ios7_osys_events.cpp
+@@ -36,16 +36,18 @@
+ 	long curTime = getMillis();
+ 
+ 	if (_queuedInputEvent.type != Common::EVENT_INVALID && curTime >= _queuedEventTime) {
+ 		event = _queuedInputEvent;
+ 		_queuedInputEvent.type = Common::EVENT_INVALID;
+ 		return true;
+ 	}
+ 
++
++	if (_queuedInputEvent.type != Common::EVENT_INVALID) return false;
+ 	InternalEvent internalEvent;
+ 
+ 	if (iOS7_fetchEvent(&internalEvent)) {
+ 		switch (internalEvent.type) {
+ 		case kInputTouchBegan:
+ 			if (!handleEvent_touchBegan(event, internalEvent.value1, internalEvent.value2))
+ 				return false;
+ 			break;
+@@ -137,26 +139,28 @@
+ 
+ 		case kInputJoystickButtonUp:
+ 			event.type = Common::EVENT_JOYBUTTON_UP;
+ 			event.joystick.button = internalEvent.value1;
+ 			break;
+ 
+ 		case kInputScreenChanged:
+ 			rebuildSurface();
++#ifndef IPHONE_IOS5
+ 			dynamic_cast<iOSGraphicsManager *>(_graphicsManager)->notifyResize(getScreenWidth(), getScreenHeight());
++#endif
+ 			event.type = Common::EVENT_SCREEN_CHANGED;
+ 			break;
+ 
+ 		case kInputTouchModeChanged:
+ 			handleEvent_touchModeChanged();
+-			break;
++			return false;
+ 
+ 		default:
+-			break;
++			return false;
+ 		}
+ 
+ 		return true;
+ 	}
+ 	return false;
+ }
+ 
+ bool OSystem_iOS7::handleEvent_touchBegan(Common::Event &event, int x, int y) {
+@@ -220,18 +224,23 @@
+ 	event.type = Common::EVENT_MOUSEMOVE;
+ 	handleEvent_mouseEvent(event, deltaX, deltaY);
+ }
+ 
+ void OSystem_iOS7::handleEvent_mouseEvent(Common::Event &event, int relX, int relY) {
+ 	Common::Point mouse = dynamic_cast<iOSGraphicsManager *>(_graphicsManager)->getMousePosition();
+ 	dynamic_cast<iOSGraphicsManager *>(_graphicsManager)->notifyMousePosition(mouse);
+ 
++#ifdef IPHONE_IOS5
++	event.relMouse.x = -relX;
++	event.relMouse.y = -relY;
++#else
+ 	event.relMouse.x = relX;
+ 	event.relMouse.y = relY;
++#endif
+ 	event.mouse = mouse;
+ }
+ 
+ 
+ void  OSystem_iOS7::handleEvent_orientationChanged(int orientation) {
+ 	//printf("Orientation: %i\n", orientation);
+ 
+ 	ScreenOrientation newOrientation = (ScreenOrientation)orientation;
+@@ -253,16 +262,19 @@
+ 		break;
+ 	}
+ 
+ 	updateTouchMode();
+ }
+ 
+ void OSystem_iOS7::rebuildSurface() {
+ 	updateOutputSurface();
++#ifdef IPHONE_IOS5
++	dynamic_cast<iOSGraphicsManager *>(_graphicsManager)->notifyResize(getScreenWidth(), getScreenHeight());
++#endif
+ }
+ 
+ void OSystem_iOS7::handleEvent_applicationSuspended() {
+ 	suspendLoop();
+ }
+ 
+ void OSystem_iOS7::handleEvent_applicationResumed() {
+ 	rebuildSurface();
+diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/ios7_osys_main.cpp
+--- a/backends/platform/ios7/ios7_osys_main.cpp
++++ b/backends/platform/ios7/ios7_osys_main.cpp
+@@ -33,16 +33,19 @@
+ #include "common/scummsys.h"
+ #include "common/util.h"
+ #include "common/rect.h"
+ #include "common/file.h"
+ #include "common/fs.h"
+ #include "common/config-manager.h"
+ #include "common/translation.h"
+ #include "common/formats/ini-file.h"
++#ifdef IPHONE_IOS5
++#include "backends/platform/ios5/metrics.h"
++#endif
+ 
+ #include "base/main.h"
+ 
+ #include "engines/engine.h"
+ #include "engines/metaengine.h"
+ 
+ #include "graphics/cursorman.h"
+ #include "gui/gui-manager.h"
+@@ -83,36 +86,43 @@
+ 			return Common::kWritePermissionDenied;
+ 		if (errno == ENOENT)
+ 			return Common::kPathDoesNotExist;
+ 		return Common::kUnknownError;
+ 	}
+ };
+ 
+ OSystem_iOS7::OSystem_iOS7() :
+-	_mixer(NULL), _queuedEventTime(0),
++	_mixer(NULL), _timerSource(NULL), _timerQueue(NULL), _queuedEventTime(0),
+ 	_screenOrientation(kScreenOrientationAuto),
+ 	_runningTasks(0) {
+ 	_queuedInputEvent.type = Common::EVENT_INVALID;
+ 	_currentTouchMode = kTouchModeTouchpad;
+ 
+ 	_chrootBasePath = iOS7_getDocumentsDir();
++#ifdef IPHONE_IOS5
++	_perfThread = pthread_self();
++	IOS5Metrics::startFrameTrace();
++#endif
+ 	ChRootFilesystemFactory *chFsFactory = new ChRootFilesystemFactory(_chrootBasePath);
+ 	_fsFactory = chFsFactory;
++#ifdef IPHONE_IOS5
++	chFsFactory->addVirtualDrive("games:", "/var/mobile/ScummVM");
++#endif
+ 	// Add virtual drive for bundle path
+ 	Common::String appBubdlePath = iOS7_getAppBundleDir();
+ 	if (!appBubdlePath.empty())
+ 		chFsFactory->addVirtualDrive("appbundle:", appBubdlePath);
+ }
+ 
+ OSystem_iOS7::~OSystem_iOS7() {
+-	AudioQueueDispose(s_AudioQueue.queue, true);
++	quit();
+ 
+ 	delete _mixer;
+-	delete _graphicsManager;
++
+ }
+ 
+ #if defined(USE_OPENGL_GAME) || defined(USE_OPENGL_SHADERS)
+ Common::Array<uint> OSystem_iOS7::getSupportedAntiAliasingLevels() const {
+ 	Common::Array<uint> levels;
+ 
+ 	if (!OpenGLContext.framebufferObjectMultisampleSupported) {
+ 		return levels;
+@@ -149,16 +159,40 @@
+ 
+ int OSystem_iOS7::timerHandler(int t) {
+ 	DefaultTimerManager *tm = (DefaultTimerManager *)g_system->getTimerManager();
+ 	tm->handler();
+ 	return t;
+ }
+ 
+ void OSystem_iOS7::initBackend() {
++#ifdef IPHONE_IOS5
++	_perfThread = pthread_self();
++	IOS5Metrics::startFrameTrace();
++	ConfMan.registerDefault("filtering", true);
++	if (!ConfMan.hasKey("ios5_smooth_scaling", Common::ConfigManager::kApplicationDomain)) {
++		ConfMan.setBool("filtering", true, Common::ConfigManager::kApplicationDomain);
++		ConfMan.setBool("ios5_smooth_scaling", true, Common::ConfigManager::kApplicationDomain);
++		ConfMan.flushToDisk();
++	}
++	if (!ConfMan.hasKey("ios5_current_backend", Common::ConfigManager::kApplicationDomain)) {
++		ConfMan.set("gui_theme", "scummremastered", Common::ConfigManager::kApplicationDomain);
++		ConfMan.set("gui_language", "en", Common::ConfigManager::kApplicationDomain);
++		ConfMan.set("savepath", "/Savegames", Common::ConfigManager::kApplicationDomain);
++		ConfMan.set("browser_lastpath", "games:/", Common::ConfigManager::kApplicationDomain);
++		ConfMan.removeKey("themepath", Common::ConfigManager::kApplicationDomain);
++		ConfMan.removeKey("extrapath", Common::ConfigManager::kApplicationDomain);
++		ConfMan.setBool("ios5_current_backend", true, Common::ConfigManager::kApplicationDomain);
++		ConfMan.flushToDisk();
++	}
++	fprintf(stderr, "ios5: current backend init; theme=%s data=%s\n",
++	        ConfMan.get("gui_theme").c_str(), _chrootBasePath.c_str());
++	fprintf(stderr, "ios5: smooth scaling preference=%d; fonts=FreeType 2.15.0\n", ConfMan.getBool("filtering"));
++#endif
++
+ 	_eventManager = new DefaultEventManager(this);
+ 
+ 	_savefileManager = new SandboxedSaveFileManager(Common::Path(_chrootBasePath, Common::Path::kNativeSeparator), "/Savegames");
+ 
+ 	_timerManager = new DefaultTimerManager();
+ 
+ 	_startTime = CACurrentMediaTime();
+ 
+@@ -320,18 +354,27 @@
+ 
+ uint32 OSystem_iOS7::getMillis(bool skipRecord) {
+ 	CFTimeInterval timeInSeconds = CACurrentMediaTime();
+ 	return (uint32) ((timeInSeconds - _startTime) * 1000.0);
+ }
+ 
+ void OSystem_iOS7::delayMillis(uint msecs) {
+ 	//printf("delayMillis(%d)\n", msecs);
++#ifdef IPHONE_IOS5
++	if (pthread_equal(pthread_self(), _perfThread)) {
++		static IOS5Metrics::Metric metric("requested_sleep");
++		IOS5Metrics::Scope perf(metric, msecs);
++		usleep(msecs * 1000);
++		return;
++	}
++#endif
+ 	usleep(msecs * 1000);
+ }
++
+ 
+ float OSystem_iOS7::getMouseSpeed() {
+ 	switch (ConfMan.getInt("kbdmouse_speed")) {
+ 	case 0:
+ 		return 0.25;
+ 	case 1:
+ 		return 0.5;
+ 	case 2:
+@@ -348,32 +391,46 @@
+ 		return 2.0;
+ 	default:
+ 		return 1.0;
+ 	}
+ }
+ 
+ void OSystem_iOS7::setTimerCallback(TimerProc callback, int interval) {
+ 	//printf("setTimerCallback()\n");
+-	dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+-	dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+-
+-	if (timer)
+-	{
+-		dispatch_source_set_timer(timer, dispatch_walltime(NULL, 0), interval * NSEC_PER_MSEC, interval * NSEC_PER_MSEC / 10);
+-		dispatch_source_set_event_handler(timer, ^{ callback(interval); });
+-		dispatch_resume(timer);
+-	}
++	if (_timerSource) {
++		dispatch_source_cancel(_timerSource);
++		dispatch_sync(_timerQueue, ^{});
++		dispatch_release(_timerSource);
++		dispatch_release(_timerQueue);
++		_timerSource = NULL;
++		_timerQueue = NULL;
++	}
++	if (!callback) return;
++	_timerQueue = dispatch_queue_create("org.scummvm.ios5.timer", NULL);
++	_timerSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _timerQueue);
++	if (_timerSource) {
++		dispatch_source_set_timer(_timerSource, dispatch_time(DISPATCH_TIME_NOW, 0),
++		 interval * NSEC_PER_MSEC, interval * NSEC_PER_MSEC / 10);
++		dispatch_source_set_event_handler(_timerSource, ^{ callback(interval); });
++		dispatch_resume(_timerSource);
++	} else {
++		dispatch_release(_timerQueue);
++		_timerQueue = NULL;
++	}
++
+ }
+ 
+ Common::MutexInternal *OSystem_iOS7::createMutex() {
+ 	return createPthreadMutexInternal();
+ }
+ 
+ void OSystem_iOS7::quit() {
++	setTimerCallback(NULL, 0);
++	stopSoundsystem();
+ }
+ 
+ void OSystem_iOS7::getTimeAndDate(TimeDate &td, bool skipRecord) const {
+ 	time_t curTime = time(0);
+ 	struct tm t = *localtime(&curTime);
+ 	td.tm_sec = t.tm_sec;
+ 	td.tm_min = t.tm_min;
+ 	td.tm_hour = t.tm_hour;
+@@ -441,16 +498,17 @@
+ 	}
+ 	return sys->getCurrentTouchMode();
+ }
+ 
+ void iOS7_main(int argc, char **argv) {
+ 
+ 	//OSystem_iOS7::migrateApp();
+ 
++#ifndef IPHONE_IOS5
+ 	Common::String logFilePath = iOS7_getDocumentsDir() + "/scummvm.log";
+ 	// Only log to file when not attached to debugger console
+ 	FILE *logFile = isatty(STDERR_FILENO) != 1 ? fopen(logFilePath.c_str(), "a") : nullptr;
+ 	if (logFile != nullptr) {
+ 		// We check for log file size; if it's too big, we rewrite it.
+ 		// This happens only upon app launch
+ 		// NOTE: We don't check for file size each time we write a log message.
+ 		long sz = ftell(logFile);
+@@ -468,23 +526,27 @@
+ 			fclose(stderr);
+ 			*stdout = *logFile;
+ 			*stderr = *logFile;
+ 			setbuf(stdout, NULL);
+ 			setbuf(stderr, NULL);
+ 		}
+ 	}
+ 
++#endif
++
+ 	chdir(iOS7_getDocumentsDir().c_str());
+ 
+ 	g_system = OSystem_iOS7::sharedInstance();
+ 	assert(g_system);
+ 
+ 	// Invoke the actual ScummVM main entry point:
+ 	scummvm_main(argc, (const char *const *) argv);
+ 	g_system->quit();       // TODO: Consider removing / replacing this!
+ 
++#ifndef IPHONE_IOS5
+ 	if (logFile != NULL) {
+ 		//*stdout = NULL;
+ 		//*stderr = NULL;
+ 		fclose(logFile);
+ 	}
+-}
++#endif
++}
+diff --git a/backends/platform/ios7/ios7_osys_main.h b/backends/platform/ios7/ios7_osys_main.h
+--- a/backends/platform/ios7/ios7_osys_main.h
++++ b/backends/platform/ios7/ios7_osys_main.h
+@@ -29,16 +29,20 @@
+ #include "common/events.h"
+ #include "common/str.h"
+ #include "common/ustr.h"
+ #include "audio/mixer_intern.h"
+ #include "backends/fs/posix/posix-fs-factory.h"
+ #include "graphics/palette.h"
+ 
+ #include <AudioToolbox/AudioQueue.h>
++#include <dispatch/dispatch.h>
++#ifdef IPHONE_IOS5
++#include <pthread.h>
++#endif
+ 
+ #define AUDIO_BUFFERS 3
+ #define WAVE_BUFFER_SIZE 2048
+ #define AUDIO_SAMPLE_RATE 44100
+ #define MAX_IOS7_SCUMMVM_LOG_FILESIZE_IN_BYTES (100*1024)
+ 
+ typedef void (*SoundProc)(void *param, byte *buf, int len);
+ typedef int (*TimerProc)(int interval);
+@@ -47,21 +51,26 @@
+ 	AudioQueueRef queue;
+ 	uint32 frameCount;
+ 	AudioQueueBufferRef buffers[AUDIO_BUFFERS];
+ 	AudioStreamBasicDescription dataFormat;
+ };
+ 
+ class OSystem_iOS7 : virtual public BaseBackend, public ModularGraphicsBackend, Common::EventSource {
+ protected:
++#ifdef IPHONE_IOS5
++	pthread_t _perfThread;
++#endif
+ 	static AQCallbackStruct s_AudioQueue;
+ 	static SoundProc s_soundCallback;
+ 	static void *s_soundParam;
+ 
+ 	Audio::MixerImpl *_mixer;
++	dispatch_source_t _timerSource;
++	dispatch_queue_t _timerQueue;
+ 
+ 	CFTimeInterval _startTime;
+ 
+ 	int _runningTasks;
+ 
+ 	long _lastMouseDown;
+ 	long _queuedEventTime;
+ 	Common::Event _queuedInputEvent;
+diff --git a/backends/platform/ios7/ios7_osys_misc.mm b/backends/platform/ios7/ios7_osys_misc.mm
+--- a/backends/platform/ios7/ios7_osys_misc.mm
++++ b/backends/platform/ios7/ios7_osys_misc.mm
+@@ -110,17 +110,17 @@
+ 			settings["recursive"] = "true";
+ 			settings["exit"] = "false";
+ 			return;
+ 		}
+ 
+ }
+ 
+ Common::String OSystem_iOS7::getSystemLanguage() const {
+-	NSString *language = [[NSLocale preferredLanguages] firstObject];
++	NSString *language = [[NSLocale preferredLanguages] objectAtIndex:0];
+ 	if (language == nil)
+ 		return Common::String();
+ 	Common::String lang([language cStringUsingEncoding:NSISOLatin1StringEncoding]);
+ 	// Depending on the iOS version this may use an underscore (e.g. en_US) or a
+ 	// dash (en-US). Make sure we always return one with an underscore.
+ 	Common::replace(lang, "-", "_");
+ 	return lang;
+ }
+@@ -182,21 +182,24 @@
+ #endif
+ }
+ 
+ bool OSystem_iOS7::openUrl(const Common::String &url) {
+ 	UIApplication *application = [UIApplication sharedApplication];
+ 	NSURL *nsurl = [NSURL URLWithString:[NSString stringWithCString:url.c_str() encoding:NSISOLatin1StringEncoding]];
+ 	// The way to oipen a URL has changed in iOS 10. Check if the iOS 10 method is recognized
+ 	// and otherwise use the old method.
++#ifndef IPHONE_IOS5
+ 	if ([application respondsToSelector:@selector(openURL:options:completionHandler:)]) {
+ 		execute_on_main_thread_async(^ {
+ 			[application openURL:nsurl options:@{} completionHandler:nil];
+ 		});
+-	} else {
++	} else
++#endif
++	{
+ 		execute_on_main_thread_async(^ {
+ 			[application openURL:nsurl];
+ 		});
+ 	}
+ 	return true;
+ }
+ 
+ bool OSystem_iOS7::isConnectionLimited() {
+diff --git a/backends/platform/ios7/ios7_osys_sound.cpp b/backends/platform/ios7/ios7_osys_sound.cpp
+--- a/backends/platform/ios7/ios7_osys_sound.cpp
++++ b/backends/platform/ios7/ios7_osys_sound.cpp
+@@ -49,16 +49,17 @@
+ 
+ 	s_soundCallback = mixCallback;
+ 	s_soundParam = this;
+ 
+ 	startSoundsystem();
+ }
+ 
+ void OSystem_iOS7::startSoundsystem() {
++	if (s_AudioQueue.queue) return;
+ 	s_AudioQueue.dataFormat.mSampleRate = AUDIO_SAMPLE_RATE;
+ 	s_AudioQueue.dataFormat.mFormatID = kAudioFormatLinearPCM;
+ 	s_AudioQueue.dataFormat.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+ 	s_AudioQueue.dataFormat.mBytesPerPacket = 4;
+ 	s_AudioQueue.dataFormat.mFramesPerPacket = 1;
+ 	s_AudioQueue.dataFormat.mBytesPerFrame = 4;
+ 	s_AudioQueue.dataFormat.mChannelsPerFrame = 2;
+ 	s_AudioQueue.dataFormat.mBitsPerChannel = 16;
+@@ -70,35 +71,34 @@
+ 		return;
+ 	}
+ 
+ 	uint32 bufferBytes = s_AudioQueue.frameCount * s_AudioQueue.dataFormat.mBytesPerFrame;
+ 
+ 	for (int i = 0; i < AUDIO_BUFFERS; i++) {
+ 		if (AudioQueueAllocateBuffer(s_AudioQueue.queue, bufferBytes, &s_AudioQueue.buffers[i])) {
+ 			printf("Error allocating AudioQueue buffer!\n");
+-			_mixer->setReady(false);
++			stopSoundsystem();
+ 			return;
+ 		}
+ 
+ 		AQBufferCallback(&s_AudioQueue, s_AudioQueue.queue, s_AudioQueue.buffers[i]);
+ 	}
+ 
+ 	AudioQueueSetParameter(s_AudioQueue.queue, kAudioQueueParam_Volume, 1.0);
+ 	if (AudioQueueStart(s_AudioQueue.queue, NULL)) {
+ 		printf("Error starting the AudioQueue!\n");
+-		_mixer->setReady(false);
++		stopSoundsystem();
+ 		return;
+ 	}
+ 
+ 	_mixer->setReady(true);
++	fprintf(stderr, "ios5: AudioQueue ready 44100Hz stereo, 3 x 2048 frames\n");
+ }
+ 
+ void OSystem_iOS7::stopSoundsystem() {
++	if (_mixer) _mixer->setReady(false);
++	if (!s_AudioQueue.queue) return;
+ 	AudioQueueStop(s_AudioQueue.queue, true);
+-
+-	for (int i = 0; i < AUDIO_BUFFERS; i++) {
+-		AudioQueueFreeBuffer(s_AudioQueue.queue, s_AudioQueue.buffers[i]);
+-	}
+-
+ 	AudioQueueDispose(s_AudioQueue.queue, true);
+-	_mixer->setReady(false);
++	s_AudioQueue.queue = NULL;
++	memset(s_AudioQueue.buffers, 0, sizeof(s_AudioQueue.buffers));
+ }
+diff --git a/backends/platform/ios7/ios7_osys_video.mm b/backends/platform/ios7/ios7_osys_video.mm
+--- a/backends/platform/ios7/ios7_osys_video.mm
++++ b/backends/platform/ios7/ios7_osys_video.mm
+@@ -30,34 +30,42 @@
+ #define UIViewParentController(__view) ({ \
+ 	UIResponder *__responder = __view; \
+ 	while ([__responder isKindOfClass:[UIView class]]) \
+ 		__responder = [__responder nextResponder]; \
+ 	(UIViewController *)__responder; \
+ })
+ 
+ static void displayAlert(void *ctx) {
++#ifdef IPHONE_IOS5
++	UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"ScummVM error"
++	 message:[NSString stringWithUTF8String:(const char *)ctx] delegate:nil
++	 cancelButtonTitle:@"OK" otherButtonTitles:nil];
++	[alert show];
++	[alert release];
++#else
+ 	UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Fatal Error"
+ 								message:[NSString stringWithCString:(const char *)ctx 	encoding:NSUTF8StringEncoding]
+ 								preferredStyle:UIAlertControllerStyleAlert];
+ 
+ 	UIAlertAction* defaultAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault
+ 	   handler:^(UIAlertAction * action) {
+ 		OSystem_iOS7::sharedInstance()->quit();
+ 		abort();
+ 	}];
+ 
+ 	[alert addAction:defaultAction];
+ 	[UIViewParentController([iOS7AppDelegate iPhoneView]) presentViewController:alert animated:YES completion:nil];
++#endif
+ }
+ 
+ void OSystem_iOS7::fatalError() {
+ 	if (_lastErrorMessage.size()) {
+ 		dispatch_async_f(dispatch_get_main_queue(), (void *)_lastErrorMessage.c_str(), displayAlert);
+-		for(;;);
++		for (;;) usleep(100000);
+ 	}
+ 	else {
+ 		OSystem::fatalError();
+ 	}
+ }
+ 
+ void OSystem_iOS7::logMessage(LogMessageType::Type type, const char *message) {
+ 	FILE *output = 0;
+@@ -143,16 +151,17 @@
+ 	if (--_runningTasks == 0) {
+ 		dispatch_async(dispatch_get_main_queue(), ^{
+ 			[[UIApplication sharedApplication] setIdleTimerDisabled:NO];
+ 		});
+ 	}
+ }
+ 
+ void OSystem_iOS7::updateOutputSurface() {
++	glFinish();
+ 	execute_on_main_thread(^ {
+ 		[[iOS7AppDelegate iPhoneView] initSurface];
+ 	});
+ }
+ 
+ void OSystem_iOS7::updateTouchMode() {
+ #if TARGET_OS_IOS
+ 	execute_on_main_thread(^ {
+@@ -237,16 +246,20 @@
+ 		// We don't end up here if orientation is set to auto.
+ 		// Also, we won't know for sure if it will select right or left for landscape
+ 		// orientation, or normal or upside down (most probably normal) for portrait.
+ 		// The _screenOrientation will be set accordingly when handling the orientationChanged
+ 		// event so just set it to what we're given for now.
+ 		_screenOrientation = screenOrientation;
+ 	} else
+ #endif
++#ifdef IPHONE_IOS5
++	if (shouldUpdateScreenOrientation)
++		execute_on_main_thread(^{ [UIViewController attemptRotationToDeviceOrientation]; });
++#else
+ 	if (shouldUpdateScreenOrientation) {
+ 		switch (screenOrientation) {
+ 		case kScreenOrientationPortrait:
+ 		case kScreenOrientationFlippedPortrait:
+ 			execute_on_main_thread(^ {
+ 				[[UIDevice currentDevice] setValue:@(UIInterfaceOrientationPortrait) forKey:@"orientation"];
+ 				});
+ 			_screenOrientation = kScreenOrientationPortrait;
+@@ -258,16 +271,17 @@
+ 				});
+ 			_screenOrientation = kScreenOrientationLandscape;
+ 			break;
+ 		case kScreenOrientationAuto:
+ 		default:
+ 			break;
+ 		}
+ 	}
++#endif
+ }
+ #endif
+ 
+ bool OSystem_iOS7::isKeyboardShown() const {
+ 	__block bool isShown = false;
+ 	execute_on_main_thread(^{
+ 		isShown = [[iOS7AppDelegate iPhoneView] isKeyboardShown];
+ 	});
+@@ -292,9 +306,8 @@
+ 
+ int OSystem_iOS7::getScreenHeight() const {
+ 	return [[iOS7AppDelegate iPhoneView] getScreenHeight];
+ }
+ 
+ float OSystem_iOS7::getSystemHiDPIScreenFactor() const {
+ 	return [[UIScreen mainScreen] scale];
+ }
+-
+diff --git a/backends/platform/ios7/ios7_scummvm_view_controller.mm b/backends/platform/ios7/ios7_scummvm_view_controller.mm
+--- a/backends/platform/ios7/ios7_scummvm_view_controller.mm
++++ b/backends/platform/ios7/ios7_scummvm_view_controller.mm
+@@ -43,24 +43,30 @@
+ 
+ - (BOOL)prefersPointerLocked {
+ 	/* This hides the OS cursor so ScummVM has to draw one */
+ 	return YES;
+ }
+ 
+ #if TARGET_OS_IOS
+ 
++#ifndef IPHONE_IOS5
+ - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures {
+ 	return UIRectEdgeAll;
+ }
+ 
++#endif
++
+ - (UIInterfaceOrientation)interfaceOrientation {
++#ifndef IPHONE_IOS5
+ 	if (@available(iOS 13.0, *)) {
+ 		return [[[[self view] window] windowScene] interfaceOrientation];
+-	} else {
++	} else
++#endif
++	{
+ 		return [[UIApplication sharedApplication] statusBarOrientation];
+ 	}
+ }
+ 
+ - (UIInterfaceOrientation)currentOrientation {
+ 	return currentOrientation;
+ }
+ 
+@@ -86,16 +92,25 @@
+ 
+ 	UIInterfaceOrientation orientation = [self interfaceOrientation];
+ 	if (orientation != UIInterfaceOrientationUnknown && orientation != currentOrientation) {
+ 		currentOrientation = orientation;
+ 		[[iOS7AppDelegate iPhoneView] interfaceOrientationChanged:orientation];
+ 	}
+ }
+ 
++#ifdef IPHONE_IOS5
++- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
++	return ([[iOS7AppDelegate iPhoneView] supportedScreenOrientations] & (1u << orientation)) != 0;
++}
++- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)previous {
++	[self updateCurrentOrientation];
++	[[iOS7AppDelegate iPhoneView] addEvent:InternalEvent(kInputScreenChanged, 0, 0)];
++}
++#else
+ - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+ 	[super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+ 
+ 	// In iOS 16, make sure that the current orientation is updated when the
+ 	// function viewWillTransitionToSize is called to make sure it's updated
+ 	// when the adjustViewFrameForSafeArea is called. This makes sure that the
+ 	// screen size is updated correctly when forcing the orientation based on
+ 	// the backend user setting.
+@@ -113,10 +128,11 @@
+ 			[self setCurrentOrientation:orientation];
+ 			if (@available(iOS 11.0, *)) {
+ 				[self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
+ 			}
+ 		}
+ 	}];
+ }
+ #endif
++#endif
+ 
+ @end
+diff --git a/backends/platform/ios7/ios7_touch_controller.mm b/backends/platform/ios7/ios7_touch_controller.mm
+--- a/backends/platform/ios7/ios7_touch_controller.mm
++++ b/backends/platform/ios7/ios7_touch_controller.mm
+@@ -43,17 +43,19 @@
+ }
+ 
+ - (BOOL)shouldHandleTouch:(UITouch *)touch {
+ 	// In iOS touchpads will trigger UITouchTypeIndirect events
+ 	// However, they will also send mose events. Make sure to
+ 	// block the UITouchTypeIndirect but not in Apple TV OS where
+ 	// they are required as the Apple TV remote sends touh events
+ 	// but no mouse events.
+-#if TARGET_OS_IOS
++#if defined(IPHONE_IOS5)
++	return touch != nil;
++#elif TARGET_OS_IOS
+ 	return touch != nil && (touch.type == UITouchTypeDirect || touch.type == UITouchTypePencil);
+ #else
+ 	return YES;
+ #endif
+ }
+ 
+ - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+ 	_touch = [touches anyObject];
+diff --git a/backends/platform/ios7/ios7_video.h b/backends/platform/ios7/ios7_video.h
+--- a/backends/platform/ios7/ios7_video.h
++++ b/backends/platform/ios7/ios7_video.h
+@@ -18,16 +18,26 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  *
+  */
+ 
+ #ifndef BACKENDS_PLATFORM_IOS7_IOS7_VIDEO_H
+ #define BACKENDS_PLATFORM_IOS7_IOS7_VIDEO_H
+ 
+ #include <UIKit/UIKit.h>
++#ifdef IPHONE_IOS5
++
++static const UIInterfaceOrientation UIInterfaceOrientationUnknown = (UIInterfaceOrientation)0;
++typedef NSUInteger UIInterfaceOrientationMask;
++enum {
++ UIInterfaceOrientationMaskPortrait = 1 << UIInterfaceOrientationPortrait,
++ UIInterfaceOrientationMaskLandscape = (1 << UIInterfaceOrientationLandscapeLeft) | (1 << UIInterfaceOrientationLandscapeRight),
++ UIInterfaceOrientationMaskAll = 30
++};
++#endif
+ #include <Foundation/Foundation.h>
+ #include <QuartzCore/QuartzCore.h>
+ 
+ #include <OpenGLES/EAGL.h>
+ #include <OpenGLES/ES2/gl.h>
+ #include <OpenGLES/ES2/glext.h>
+ 
+ #include "backends/platform/ios7/ios7_keyboard.h"
+diff --git a/backends/platform/ios7/ios7_video.mm b/backends/platform/ios7/ios7_video.mm
+--- a/backends/platform/ios7/ios7_video.mm
++++ b/backends/platform/ios7/ios7_video.mm
+@@ -17,24 +17,34 @@
+  * You should have received a copy of the GNU General Public License
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  *
+  */
+ 
+ // Disable symbol overrides so that we can use system headers.
+ #define FORBIDDEN_SYMBOL_ALLOW_ALL
+ 
++#include "backends/platform/ios5/metrics.h"
++#include <UIKit/UIGestureRecognizerSubclass.h>
+ #include "common/events.h"
+ #include "common/config-manager.h"
+ #include "backends/platform/ios7/ios7_video.h"
+ #include "backends/platform/ios7/ios7_touch_controller.h"
++#ifndef IPHONE_IOS5
+ #include "backends/platform/ios7/ios7_mouse_controller.h"
+ #include "backends/platform/ios7/ios7_gamepad_controller.h"
++#endif
+ 
+ #include "backends/platform/ios7/ios7_app_delegate.h"
++
++#ifdef IPHONE_IOS5
++void *ios5CurrentEAGLContext() {
++	return [EAGLContext currentContext];
++}
++#endif
+ 
+ #ifdef __IPHONE_14_0
+ #include <GameController/GameController.h>
+ #endif
+ 
+ #if 0
+ static long g_lastTick = 0;
+ static int g_frames = 0;
+@@ -70,16 +80,18 @@
+ 		block();
+ 	}
+ 	else {
+ 		dispatch_sync(dispatch_get_main_queue(), block);
+ 	}
+ }
+ 
+ bool iOS7_fetchEvent(InternalEvent *event) {
++	static IOS5Metrics::Metric metric("input_fetch");
++	IOS5Metrics::Scope perf(metric);
+ 	__block bool fetched;
+ 	execute_on_main_thread(^{
+ 		fetched = [[iOS7AppDelegate iPhoneView] fetchEvent:event];
+ 	});
+ 	return fetched;
+ }
+ 
+ @implementation iPhoneView {
+@@ -97,45 +109,76 @@
+ 	UISwipeGestureRecognizer *swipeLeft;
+ 	UISwipeGestureRecognizer *swipeUp;
+ 	UISwipeGestureRecognizer *swipeDown;
+ 	UISwipeGestureRecognizer *swipeRight3;
+ 	UISwipeGestureRecognizer *swipeLeft3;
+ 	UISwipeGestureRecognizer *swipeUp3;
+ 	UISwipeGestureRecognizer *swipeDown3;
+ 	CGPoint touchesBegan;
+-#endif
++	CGSize _lastLayoutSize;
++#endif
++	BOOL _drawableNeedsRefresh;
+ }
+ 
+ + (Class)layerClass {
+ 	return [CAEAGLLayer class];
+ }
+ 
+ // According to Apple doc layoutSublayersOfLayer: is supported from iOS 10.0.
+ // This doesn't seem to be correct since the instance method layoutSublayers,
+ // supported from iOS 2.0, default calls the layoutSublayersOfLayer: method
+ // of the layer’s delegate object. It's been verified that this function is
+ // called in at least iOS 9.3.5.
++#ifdef IPHONE_IOS5
++- (void)layoutControlButtons {
++	const CGRect bounds = self.bounds;
++	const CGFloat margin = 10;
++	const CGSize touchSize = [_toggleTouchModeButton imageForState:UIControlStateNormal].size;
++	const CGSize menuSize = [_menuButton imageForState:UIControlStateNormal].size;
++	_toggleTouchModeButton.frame = CGRectMake(CGRectGetMaxX(bounds) - margin - touchSize.width,
++		CGRectGetMinY(bounds) + margin, touchSize.width, touchSize.height);
++	_menuButton.frame = CGRectMake(CGRectGetMaxX(bounds) - margin - menuSize.width,
++		CGRectGetMinY(bounds) + margin + touchSize.height, menuSize.width, menuSize.height);
++}
++
++- (void)layoutSubviews {
++	[super layoutSubviews];
++	[self layoutControlButtons];
++	CGSize pixels = CGSizeMake(self.bounds.size.width * self.contentScaleFactor,
++	                          self.bounds.size.height * self.contentScaleFactor);
++	if (_eventLock && !CGSizeEqualToSize(pixels, _lastLayoutSize)) {
++		_lastLayoutSize = pixels;
++		fprintf(stderr, "ios5: view layout bounds=%.0fx%.0f pixels=%.0fx%.0f control-x=%.0f\n",
++			(double)self.bounds.size.width, (double)self.bounds.size.height,
++			(double)pixels.width, (double)pixels.height, (double)_toggleTouchModeButton.frame.origin.x);
++		[self addEvent:InternalEvent(kInputScreenChanged, 0, 0)];
++	}
++}
++#else
+ - (void)layoutSublayersOfLayer:(CAEAGLLayer *)layer {
+ 	if (layer == self.layer) {
+ 		[self addEvent:InternalEvent(kInputScreenChanged, 0, 0)];
+ 	}
+ 	[super layoutSublayersOfLayer:layer];
+ }
+ 
++#endif
++
+ - (void)createContext {
+ 	CAEAGLLayer *eaglLayer = (CAEAGLLayer *)self.layer;
+ 
+ 	eaglLayer.opaque = YES;
+-	eaglLayer.drawableProperties = @{
+-	                                 kEAGLDrawablePropertyRetainedBacking: @NO,
+-	                                 kEAGLDrawablePropertyColorFormat: kEAGLColorFormatRGBA8,
+-	                                };
+-
++	eaglLayer.drawableProperties = [NSDictionary dictionaryWithObjectsAndKeys:
++	 [NSNumber numberWithBool:NO], kEAGLDrawablePropertyRetainedBacking,
++	 kEAGLColorFormatRGBA8, kEAGLDrawablePropertyColorFormat, nil];
++
++#ifndef IPHONE_IOS5
+ 	_mainContext = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
++#endif
+ 
+ 	// Not all iDevices support OpenGLES 3, fallback to OpenGLES 2
+ 	if (_mainContext == nil) {
+ 		_mainContext = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
+ 	}
+ 	// In case creating the OpenGL ES context failed, we will error out here.
+ 	if (_mainContext == nil) {
+ 		printError("Could not create OpenGL ES context.");
+@@ -145,68 +188,98 @@
+ 	// main thread will always use _mainContext
+ 	[EAGLContext setCurrentContext:_mainContext];
+ }
+ 
+ - (uint)createOpenGLContext {
+ 	// Create OpenGL context with the sharegroup from the context
+ 	// connected to the Apple Core Animation layer
+ 	if (!_openGLContext && _mainContext) {
++#ifndef IPHONE_IOS5
+ 		_openGLContext = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3 sharegroup:_mainContext.sharegroup];
++#endif
+ 
+ 		// Not all iDevices support OpenGLES 3, fallback to OpenGLES 2
+ 		if (_openGLContext == nil) {
+ 			_openGLContext = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2 sharegroup:_mainContext.sharegroup];
+ 		}
+ 		if (_openGLContext == nil) {
+ 			printError("Could not create OpenGL ES context using sharegroup");
+ 			abort();
+ 		}
+ 		// background thread will always use _openGLContext
+ 		if ([EAGLContext setCurrentContext:_openGLContext]) {
++			fprintf(stderr, "ios5: backend=ios5 renderer=%s version=%s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+ 			[self setupRenderBuffer];
+ 		}
+ 	}
+ 	return _viewRenderbuffer;
+ }
+ 
+ - (void)destroyOpenGLContext {
++	if (_openGLContext) {
++		[EAGLContext setCurrentContext:_openGLContext];
++		glFinish();
++		[EAGLContext setCurrentContext:nil];
++	}
+ 	[_openGLContext release];
+ 	_openGLContext = nil;
+ }
+ 
+ - (void)refreshScreen {
++	static IOS5Metrics::Metric metric("present");
++	const uint64_t start = IOS5Metrics::nowUS();
+ 	glBindRenderbuffer(GL_RENDERBUFFER, _viewRenderbuffer);
+-	[_openGLContext presentRenderbuffer:GL_RENDERBUFFER];
++	BOOL presented = [_openGLContext presentRenderbuffer:GL_RENDERBUFFER];
++	const uint64_t end = IOS5Metrics::nowUS();
++	IOS5Metrics::tracePresent(start, end);
++	metric.record(start, end, 0, presented);
++	static unsigned frames = 0;
++	if (!presented || frames++ == 0)
++		fprintf(stderr, "ios5: GLES2 present=%s framebuffer=0x%x error=0x%x\n",
++		        presented ? "ok" : "FAILED", glCheckFramebufferStatus(GL_FRAMEBUFFER), glGetError());
+ }
+ 
+ - (int)getScreenWidth {
+ 	return _renderBufferWidth;
+ }
+ 
+ - (int)getScreenHeight {
+ 	return _renderBufferHeight;
+ }
+ 
+ - (void)setupRenderBuffer {
+ 	execute_on_main_thread(^{
++		[EAGLContext setCurrentContext:_mainContext];
++#ifdef IPHONE_IOS5
++
++
++		if (_viewRenderbuffer && !_drawableNeedsRefresh &&
++		    _renderBufferWidth == (int)(self.bounds.size.width * self.contentScaleFactor) &&
++		    _renderBufferHeight == (int)(self.bounds.size.height * self.contentScaleFactor)) return;
++		_drawableNeedsRefresh = NO;
++#endif
+ 		if (!_viewRenderbuffer) {
+ 			glGenRenderbuffers(1, &_viewRenderbuffer);
+ 			printOpenGLError();
+ 		}
++		[EAGLContext setCurrentContext:_mainContext];
+ 		glBindRenderbuffer(GL_RENDERBUFFER, _viewRenderbuffer);
+ 		printOpenGLError();
+ 		if (![_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(id <EAGLDrawable>) self.layer]) {
+ 			printError("Failed renderbufferStorage");
++			abort();
+ 		}
+ 		// Retrieve the render buffer size. This *should* match the frame size,
+ 		// i.e. g_fullWidth and g_fullHeight.
+ 		glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &_renderBufferWidth);
+ 		printOpenGLError();
+ 		glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &_renderBufferHeight);
++		glFlush();
++		fprintf(stderr, "ios5: GLES2 drawable=%dx%d\n", _renderBufferWidth, _renderBufferHeight);
+ 		printOpenGLError();
+ 	});
+ }
+ 
+ - (void)deleteRenderbuffer {
+ 	glDeleteRenderbuffers(1, &_viewRenderbuffer);
+ }
+ 
+@@ -215,60 +288,76 @@
+ 	UILongPressGestureRecognizer *longPressKeyboard = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPressKeyboard:)];
+ 	[_toggleTouchModeButton addGestureRecognizer:longPressKeyboard];
+ 	[longPressKeyboard setNumberOfTouchesRequired:1];
+ 	[longPressKeyboard release];
+ 
+ 	oneFingerTapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(oneFingerTap:)];
+ 	[oneFingerTapGesture setNumberOfTapsRequired:1];
+ 	[oneFingerTapGesture setNumberOfTouchesRequired:1];
++#ifndef IPHONE_IOS5
+ 	[oneFingerTapGesture setAllowedTouchTypes:@[@(UITouchTypeDirect),@(UITouchTypePencil)]];
++#endif
+ 	[oneFingerTapGesture setDelaysTouchesBegan:NO];
+ 	[oneFingerTapGesture setDelaysTouchesEnded:NO];
+ 
+ 	twoFingerTapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingerTap:)];
+ 	[twoFingerTapGesture setNumberOfTapsRequired:1];
+ 	[twoFingerTapGesture setNumberOfTouchesRequired:2];
++#ifndef IPHONE_IOS5
+ 	[twoFingerTapGesture setAllowedTouchTypes:@[@(UITouchTypeDirect)]];
++#endif
+ 	[twoFingerTapGesture setDelaysTouchesBegan:NO];
+ 	[twoFingerTapGesture setDelaysTouchesEnded:NO];
+-	
++
++#ifndef IPHONE_IOS5
+ 	pencilThreeTapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(pencilThreeTap:)];
+ 	[pencilThreeTapGesture setNumberOfTapsRequired:3];
+ 	[pencilThreeTapGesture setNumberOfTouchesRequired:1];
++#ifndef IPHONE_IOS5
+ 	[pencilThreeTapGesture setAllowedTouchTypes:@[@(UITouchTypePencil)]];
++#endif
+ 	[pencilThreeTapGesture setDelaysTouchesBegan:NO];
+ 	[pencilThreeTapGesture setDelaysTouchesEnded:NO];
+ 
++#endif
+ 	// Default long press duration is 0.5 seconds which suits us well
+ 	oneFingerLongPressGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(oneFingerLongPress:)];
+ 	[oneFingerLongPressGesture setNumberOfTouchesRequired:1];
++#ifndef IPHONE_IOS5
+ 	[oneFingerLongPressGesture setAllowedTouchTypes:@[@(UITouchTypeDirect),@(UITouchTypePencil)]];
++#endif
+ 	[oneFingerLongPressGesture setDelaysTouchesBegan:NO];
+ 	[oneFingerLongPressGesture setDelaysTouchesEnded:NO];
+ 	[oneFingerLongPressGesture setCancelsTouchesInView:NO];
+ 	[oneFingerLongPressGesture canPreventGestureRecognizer:oneFingerTapGesture];
+ 
+ 	twoFingerLongPressGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingerLongPress:)];
+ 	[twoFingerLongPressGesture setNumberOfTouchesRequired:2];
++#ifndef IPHONE_IOS5
+ 	[twoFingerLongPressGesture setAllowedTouchTypes:@[@(UITouchTypeDirect)]];
++#endif
+ 	[twoFingerLongPressGesture setDelaysTouchesBegan:NO];
+ 	[twoFingerLongPressGesture setDelaysTouchesEnded:NO];
+ 	[twoFingerLongPressGesture setCancelsTouchesInView:NO];
+ 	[twoFingerLongPressGesture canPreventGestureRecognizer:twoFingerTapGesture];
+-	
++
++#ifndef IPHONE_IOS5
+ 	pencilTwoTapLongTouchGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(pencilTwoTapLongTouch:)];
+ 	[pencilTwoTapLongTouchGesture setNumberOfTouchesRequired:1];
+ 	[pencilTwoTapLongTouchGesture setNumberOfTapsRequired:2];
++#ifndef IPHONE_IOS5
+ 	[pencilTwoTapLongTouchGesture setAllowedTouchTypes:@[@(UITouchTypePencil)]];
++#endif
+ 	[pencilTwoTapLongTouchGesture setMinimumPressDuration:0.5];
+ 	[pencilTwoTapLongTouchGesture setDelaysTouchesBegan:NO];
+ 	[pencilTwoTapLongTouchGesture setDelaysTouchesEnded:NO];
+ 	[pencilTwoTapLongTouchGesture setCancelsTouchesInView:NO];
+ 
++#endif
+ 	pinchKeyboard = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(keyboardPinch:)];
+ 
+ 	swipeRight = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingersSwipeRight:)];
+ 	swipeRight.direction = UISwipeGestureRecognizerDirectionRight;
+ 	swipeRight.numberOfTouchesRequired = 2;
+ 	swipeRight.delaysTouchesBegan = NO;
+ 	swipeRight.delaysTouchesEnded = NO;
+ 
+@@ -329,18 +418,22 @@
+ 	[self addGestureRecognizer:swipeLeft3];
+ 	[self addGestureRecognizer:swipeUp3];
+ 	[self addGestureRecognizer:swipeDown3];
+ 	[self addGestureRecognizer:doubleTapTwoFingers];
+ 	[self addGestureRecognizer:oneFingerTapGesture];
+ 	[self addGestureRecognizer:twoFingerTapGesture];
+ 	[self addGestureRecognizer:oneFingerLongPressGesture];
+ 	[self addGestureRecognizer:twoFingerLongPressGesture];
++#ifndef IPHONE_IOS5
+ 	[self addGestureRecognizer:pencilThreeTapGesture];
++#endif
++#ifndef IPHONE_IOS5
+ 	[self addGestureRecognizer:pencilTwoTapLongTouchGesture];
++#endif
+ 
+ 	[pinchKeyboard release];
+ 	[swipeRight release];
+ 	[swipeLeft release];
+ 	[swipeUp release];
+ 	[swipeDown release];
+ 	[swipeRight3 release];
+ 	[swipeLeft3 release];
+@@ -383,16 +476,20 @@
+ 	[longPressGestureRecognizer release];
+ #endif
+ }
+ 
+ - (id)initWithFrame:(struct CGRect)frame {
+ 	self = [super initWithFrame: frame];
+ 
+ 	_backgroundSaveStateTask = UIBackgroundTaskInvalid;
++	self.supportedScreenOrientations = UIInterfaceOrientationMaskAll;
++#ifdef IPHONE_IOS5
++	self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
++#endif
+ #if TARGET_OS_IOS
+ 	_currentOrientation = UIInterfaceOrientationUnknown;
+ 
+ 	// On-screen control buttons
+ 	UIImage *menuBtnImage = [UIImage imageNamed:@"ic_action_menu"];
+ 	_menuButton = [[UIButton alloc] initWithFrame:CGRectMake(self.frame.size.width - menuBtnImage.size.width, 0, menuBtnImage.size.width, menuBtnImage.size.height)];
+ 	[_menuButton setImage:menuBtnImage forState:UIControlStateNormal];
+ 	[_menuButton setAlpha:0.5];
+@@ -405,20 +502,22 @@
+ 	[_toggleTouchModeButton setImage:toggleTouchModeBtnImage forState:UIControlStateNormal];
+ 	[_toggleTouchModeButton setAlpha:0.5];
+ 	[_toggleTouchModeButton addTarget:self action:@selector(triggerTouchModeChanged) forControlEvents:UIControlEventTouchUpInside];
+ 	[self addSubview:_toggleTouchModeButton];
+ #endif
+ 
+ 	[self setupGestureRecognizers];
+ 
++#ifndef IPHONE_IOS5
+ 	if (@available(iOS 14.0, tvOS 14.0, *)) {
+ 		_controllers.push_back([[MouseController alloc] initWithView:self]);
+ 		_controllers.push_back([[GamepadController alloc] initWithView:self]);
+ 	}
++#endif
+ 	_controllers.push_back([[TouchController alloc] initWithView:self]);
+ 
+ 	[self setContentScaleFactor:[[UIScreen mainScreen] scale]];
+ 
+ 	_keyboardView = nil;
+ 	_eventLock = [[NSLock alloc] init];
+ 
+ 	// Initialize the OpenGL ES context
+@@ -458,16 +557,19 @@
+ 	}
+ 
+     [_toggleTouchModeButton setImage: btnImage forState:UIControlStateNormal];
+ 
+ 	[_toggleTouchModeButton setEnabled:isEnabled];
+ 	[_toggleTouchModeButton setHidden:!isEnabled];
+ 	[_menuButton setEnabled:isEnabled && [self isInGame]];
+ 	[_menuButton setHidden:!isEnabled || ![self isInGame]];
++#ifdef IPHONE_IOS5
++	[self setNeedsLayout];
++#endif
+ }
+ 
+ - (BOOL)isiOSAppOnMac {
+ #ifdef __IPHONE_14_0
+ 	if (@available(iOS 14.0, *)) {
+ 		return [NSProcessInfo processInfo].isiOSAppOnMac;
+ 	}
+ #endif
+@@ -571,22 +673,26 @@
+ 
+ 	*event = *_events.begin();
+ 	_events.pop_front();
+ 	[_eventLock unlock];
+ 	return true;
+ }
+ 
+ - (bool)isGamepadControllerSupported {
++#ifdef IPHONE_IOS5
++	return false;
++#else
+ 	if (@available(iOS 14.0, tvOS 14.0, *)) {
+ 		// Both virtual and hardware controllers are supported
+ 		return true;
+ 	} else {
+ 		return false;
+ 	}
++#endif
+ }
+ 
+ #if TARGET_OS_IOS
+ - (void)enableGestures:(BOOL)enabled {
+ 	[oneFingerTapGesture setEnabled:enabled];
+ 	[twoFingerTapGesture setEnabled:enabled];
+ 	[oneFingerLongPressGesture setEnabled:enabled];
+ 	[twoFingerLongPressGesture setEnabled:enabled];
+@@ -600,68 +706,81 @@
+ 	[swipeLeft3 setEnabled:enabled];
+ 	[swipeRight3 setEnabled:enabled];
+ 	[swipeUp3 setEnabled:enabled];
+ 	[swipeDown3 setEnabled:enabled];
+ }
+ #endif
+ 
+ - (void)virtualController:(bool)connect {
++#ifndef IPHONE_IOS5
+ 	if (@available(iOS 15.0, *)) {
+ 		for (GameController *c : _controllers) {
+ 			if ([c isKindOfClass:GamepadController.class]) {
+ 				[(GamepadController*)c virtualController:connect];
+ #if TARGET_OS_IOS
+ 				if (connect) {
+ 					[self enableGestures:NO];
+ 				} else {
+ 					[self enableGestures:YES];
+ 				}
+ #endif
+ 			}
+ 		}
+ 	}
++#endif
+ }
+ 
+ #if TARGET_OS_IOS
+ - (void)interfaceOrientationChanged:(UIInterfaceOrientation)orientation {
++#ifdef IPHONE_IOS5
++	_currentOrientation = orientation;
++#endif
+ 	ScreenOrientation screenOrientation;
+ 	if (orientation == UIInterfaceOrientationPortrait) {
+ 		screenOrientation = kScreenOrientationPortrait;
+ 	} else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+ 		screenOrientation = kScreenOrientationFlippedPortrait;
+ 	} else if (orientation == UIInterfaceOrientationLandscapeRight) {
+ 		screenOrientation = kScreenOrientationLandscape;
+ 	} else { // UIInterfaceOrientationLandscapeLeft
+ 		screenOrientation = kScreenOrientationFlippedLandscape;
+ 	}
+ 
+ 	// This function is executed also on older device models. The screens
+ 	// have sharp corners and no safe area insets. Use a constant margin.
++#ifdef IPHONE_IOS5
++	[self setNeedsLayout];
++	[self layoutIfNeeded];
++#else
+ 	const CGFloat margin = 10;
+ 	// Touch mode button on top
+ 	[_toggleTouchModeButton setFrame:CGRectMake(self.frame.size.width - _toggleTouchModeButton.imageView.image.size.width - margin, margin, _toggleTouchModeButton.imageView.image.size.width, _toggleTouchModeButton.imageView.image.size.height)];
+ 	// Burger menu button below
+ 	[_menuButton setFrame:CGRectMake(self.frame.size.width - _menuButton.imageView.image.size.width - margin, _toggleTouchModeButton.imageView.image.size.height + margin, _menuButton.imageView.image.size.width, _menuButton.imageView.image.size.height)];
++#endif
+ 
+ 	[self addEvent:InternalEvent(kInputOrientationChanged, screenOrientation, 0)];
+ 	if (UIInterfaceOrientationIsLandscape(orientation)) {
+ 		[self hideKeyboard];
+ 	} else {
+ 		// Automatically open the keyboard if changing orientation in a game
+ 		if ([self isInGame])
+ 			[self showKeyboard];
+ 	}
+ }
+ #endif
+ 
+ - (void)showKeyboard {
+ 	[_keyboardView showKeyboard];
+ #if TARGET_OS_IOS
+ 	[_toggleTouchModeButton setImage:[UIImage imageNamed:@"ic_action_keyboard"] forState:UIControlStateNormal];
++#ifdef IPHONE_IOS5
++	[self setNeedsLayout];
++#endif
+ #endif
+ }
+ 
+ - (void)hideKeyboard {
+ 	[_keyboardView hideKeyboard];
+ #if TARGET_OS_IOS
+ 	[self updateTouchMode];
+ #endif
+@@ -682,38 +801,42 @@
+ 		}
+ 	}
+ }
+ 
+ - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
+ #if TARGET_OS_IOS
+ 	UITouch *touch = [touches anyObject];
+ 	CGPoint touchesMoved = [touch locationInView:self];
++#ifndef IPHONE_IOS5
+ 	int allowedPencilMovement = 10;
+ 	switch (touch.type) {
+ 		// This prevents touches automatically clicking things after
+ 		// moving around the screen
+ 		case UITouchTypePencil:
+ 			// Apple Pencil touches are much more precise, so this
+ 			// allows some pixels of movement before invalidating the gesture.
+ 			if (abs(touchesBegan.x - touchesMoved.x) > allowedPencilMovement ||
+ 				abs(touchesBegan.y - touchesMoved.y) > allowedPencilMovement) {
+ 				[oneFingerTapGesture setState:UIGestureRecognizerStateCancelled];
+ 				[pencilThreeTapGesture setState:UIGestureRecognizerStateCancelled];
+ 			}
+ 			break;
+-			
++
+ 		default:
++#endif
+ 			if (touchesBegan.x != touchesMoved.x ||
+ 				touchesBegan.y != touchesMoved.y) {
+ 				[oneFingerTapGesture setState:UIGestureRecognizerStateCancelled];
+ 				[twoFingerTapGesture setState:UIGestureRecognizerStateCancelled];
+ 			}
++#ifndef IPHONE_IOS5
+ 			break;
+ 	}
++#endif
+ #endif
+ 	for (GameController *c : _controllers) {
+ 		if ([c isKindOfClass:TouchController.class]) {
+ 			[(TouchController *)c touchesMoved:touches withEvent:event];
+ 		}
+ 	}
+ }
+ 
+@@ -819,34 +942,34 @@
+ 		// Click right mouse
+ 		[self addEvent:InternalEvent(kInputTap, kUIViewTapSingle, 2)];
+ 	}
+ }
+ 
+ - (void)oneFingerLongPress:(UILongPressGestureRecognizer *)recognizer {
+ 	if (recognizer.state == UIGestureRecognizerStateBegan) {
+ 		[self addEvent:InternalEvent(kInputLongPress, UIViewLongPressStarted, 1)];
+-	} else if (recognizer.state == UIGestureRecognizerStateEnded) {
++	} else if (recognizer.state == UIGestureRecognizerStateEnded || recognizer.state == UIGestureRecognizerStateCancelled) {
+ 		[self addEvent:InternalEvent(kInputLongPress, UIViewLongPressEnded, 1)];
+ 	}
+ }
+ 
+ - (void)twoFingerLongPress:(UILongPressGestureRecognizer *)recognizer {
+ 	if (recognizer.state == UIGestureRecognizerStateBegan) {
+ 		[self addEvent:InternalEvent(kInputLongPress, UIViewLongPressStarted, 2)];
+-	} else if (recognizer.state == UIGestureRecognizerStateEnded) {
++	} else if (recognizer.state == UIGestureRecognizerStateEnded || recognizer.state == UIGestureRecognizerStateCancelled) {
+ 		[self addEvent:InternalEvent(kInputLongPress, UIViewLongPressEnded, 2)];
+ 	}
+ }
+ 
+ - (void)pencilTwoTapLongTouch:(UITapGestureRecognizer *)recognizer {
+ 	if (recognizer.state == UIGestureRecognizerStateBegan) {
+ 		// Hold right mouse
+ 		[self addEvent:InternalEvent(kInputLongPress, UIViewLongPressStarted, 2)];
+-	} else if (recognizer.state == UIGestureRecognizerStateEnded) {
++	} else if (recognizer.state == UIGestureRecognizerStateEnded || recognizer.state == UIGestureRecognizerStateCancelled) {
+ 		// Release right mouse
+ 		[self addEvent:InternalEvent(kInputLongPress, UIViewLongPressEnded, 2)];
+ 	}
+ }
+ 
+ - (void)twoFingersSwipeRight:(UISwipeGestureRecognizer *)recognizer {
+ 	[self addEvent:InternalEvent(kInputSwipe, kUIViewSwipeRight, 2)];
+ }
+@@ -908,16 +1031,17 @@
+ 	// Make sure to hide the keyboard when suspended. Else the frame
+ 	// sizing might become incorrect because the NotificationCenter
+ 	// sends keyboard notifications on resume.
+ 	[self hideKeyboard];
+ 	[self addEvent:InternalEvent(kInputApplicationSuspended, 0, 0)];
+ }
+ 
+ - (void)applicationResume {
++	_drawableNeedsRefresh = YES;
+ 	[self addEvent:InternalEvent(kInputApplicationResumed, 0, 0)];
+ 	// The device may have changed orientation. Make sure to update
+ 	// the screen size to the graphic manager.
+ 	[self addEvent:InternalEvent(kInputScreenChanged, 0, 0)];
+ }
+ 
+ - (void)saveApplicationState {
+ 	[self addEvent:InternalEvent(kInputApplicationSaveState, 0, 0)];
+diff --git a/base/plugins.cpp b/base/plugins.cpp
+--- a/base/plugins.cpp
++++ b/base/plugins.cpp
+@@ -131,17 +131,17 @@
+ 		LINK_PLUGIN(RISCOS)
+ 		#endif
+ 		#if defined(ANDROID_BACKEND)
+ 		LINK_PLUGIN(ANDROID)
+ 		#endif
+ 		#if defined(MACOSX)
+ 		LINK_PLUGIN(COREAUDIO)
+ 		#endif
+-		#if defined(MACOSX) || defined(IPHONE) && !defined(IPHONE_TVOS)
++		#if defined(MACOSX) || (defined(IPHONE) && !defined(IPHONE_TVOS) && !defined(IPHONE_IOS5))
+ 		LINK_PLUGIN(COREMIDI)
+ 		#endif
+ 		#if defined(EMSCRIPTEN)
+ 		LINK_PLUGIN(WEBMIDI)
+ 		#endif
+ 
+ 		#endif // defined(__LIBRETRO__)
+ 
+diff --git a/base/test_new_standards.cpp b/base/test_new_standards.cpp
+--- a/base/test_new_standards.cpp
++++ b/base/test_new_standards.cpp
+@@ -51,17 +51,18 @@
+ #include "common/hash-str.h"
+ #include "common/rect.h"
+ 
+ #ifndef DONT_TEST_UNICODE_STRING_LITERAL
+ const char16_t *u16str = u"\u00DAnicode string";
+ const char32_t *u32str = U"\u00DAnicode string";
+ #endif
+ 
+-#ifndef DONT_TEST_INITIALIZIER_LIST1
++
++#if !defined(DONT_TEST_INITIALIZIER_LIST1) && !defined(NO_CXX11_INITIALIZER_LIST)
+ #ifndef USE_INITIALIZIER_LIST_REPLACEMENT
+ #include <initializer_list>
+ #else
+ namespace std {
+ template<class T> class initializer_list {
+ public:
+ 	typedef T value_type;
+ 	typedef const T& reference;
+diff --git a/graphics/opengl/context.cpp b/graphics/opengl/context.cpp
+--- a/graphics/opengl/context.cpp
++++ b/graphics/opengl/context.cpp
+@@ -67,16 +67,19 @@
+ 	imagingSupported = false;
+ 	shadersSupported = false;
+ 	enginesShadersSupported = false;
+ 	multitextureSupported = false;
+ 	framebufferObjectSupported = false;
+ 	framebufferObjectMultisampleSupported = false;
+ 	multisampleMaxSamples = -1;
+ 	bgraSupported = false;
++#ifdef IPHONE_IOS5
++	appleBgraSupported = false;
++#endif
+ 	packedPixelsSupported = false;
+ 	packedDepthStencilSupported = false;
+ 	unpackSubImageSupported = false;
+ 	OESDepth24 = false;
+ 	textureEdgeClampSupported = false;
+ 	textureBorderClampSupported = false;
+ 	textureMirrorRepeatSupported = false;
+ 	textureMaxLevelSupported = false;
+@@ -182,16 +185,20 @@
+ 		} else if (token == "GL_ARB_imaging") {
+ 			imagingSupported = true;
+ 		} else if (token == "GL_ARB_multitexture") {
+ 			multitextureSupported = true;
+ 		} else if (token == "GL_ARB_framebuffer_object") {
+ 			framebufferObjectSupported = true;
+ 		} else if (token == "GL_EXT_bgra" || token == "GL_EXT_texture_format_BGRA8888") {
+ 			bgraSupported = true;
++#ifdef IPHONE_IOS5
++		} else if (token == "GL_APPLE_texture_format_BGRA8888") {
++			appleBgraSupported = bgraSupported = true;
++#endif
+ 		} else if (token == "GL_EXT_packed_pixels" || token == "GL_APPLE_packed_pixels") {
+ 			packedPixelsSupported = true;
+ 		} else if (token == "GL_EXT_packed_depth_stencil" || token == "GL_OES_packed_depth_stencil") {
+ 			packedDepthStencilSupported = true;
+ 		} else if (token == "GL_EXT_unpack_subimage") {
+ 			unpackSubImageSupported = true;
+ #if !USE_FORCED_GLES && !USE_FORCED_GLES2
+ 		} else if (token == "GL_EXT_framebuffer_multisample") {
+diff --git a/graphics/opengl/context.h b/graphics/opengl/context.h
+--- a/graphics/opengl/context.h
++++ b/graphics/opengl/context.h
+@@ -96,16 +96,20 @@
+ 	/**
+ 	 * Contains the maximum number of supported multisample samples
+ 	 * if multisample FBOs are supported. Contains -1 otherwise.
+ 	 */
+ 	int multisampleMaxSamples;
+ 
+ 	/** Whether BGRA support is available or not. */
+ 	bool bgraSupported;
++#ifdef IPHONE_IOS5
++
++	bool appleBgraSupported;
++#endif
+ 
+ 	/** Whether packed pixels support is available or not. */
+ 	bool packedPixelsSupported;
+ 
+ 	/** Whether packing the depth and stencil buffers is possible or not. */
+ 	bool packedDepthStencilSupported;
+ 
+ 	/** Whether specifying a pitch when uploading to textures is available or not */
+diff --git a/graphics/opengl/debug.h b/graphics/opengl/debug.h
+--- a/graphics/opengl/debug.h
++++ b/graphics/opengl/debug.h
+@@ -19,19 +19,22 @@
+  *
+  */
+ 
+ #ifndef BACKENDS_GRAPHICS_OPENGL_DEBUG_H
+ #define BACKENDS_GRAPHICS_OPENGL_DEBUG_H
+ 
+ #include "graphics/opengl/context.h"
+ 
+-#ifndef __EMSCRIPTEN__
++#if !defined(__EMSCRIPTEN__) && !(defined(IPHONE_IOS5) && defined(RELEASE_BUILD))
+ #define OPENGL_DEBUG
+ #endif
++
++
++
+ 
+ namespace OpenGL {
+ void clearGLError();
+ bool checkGLError(const char *expr, const char *file, int line);
+ } // End of namespace OpenGL
+ 
+ #define GL_WRAP_CHECK(err, call, name) do { OpenGL::clearGLError(); (call); err = OpenGL::checkGLError(#name, __FILE__, __LINE__); } while (false)
+ #ifdef OPENGL_DEBUG
+diff --git a/graphics/opengl/texture.cpp b/graphics/opengl/texture.cpp
+--- a/graphics/opengl/texture.cpp
++++ b/graphics/opengl/texture.cpp
+@@ -25,16 +25,19 @@
+ 
+ #include "graphics/opengl/texture.h"
+ #include "graphics/opengl/debug.h"
+ 
+ #include "common/algorithm.h"
+ #include "common/endian.h"
+ #include "common/rect.h"
+ #include "common/textconsole.h"
++#ifdef IPHONE_IOS5
++#include "backends/platform/ios5/metrics.h"
++#endif
+ 
+ namespace OpenGL {
+ 
+ Texture::Texture(GLenum glIntFormat, GLenum glFormat, GLenum glType, bool autoCreate)
+ 	: _glIntFormat(glIntFormat), _glFormat(glFormat), _glType(glType),
+ 	  _width(0), _height(0), _logicalWidth(0), _logicalHeight(0),
+ 	  _flip(false), _rotation(Common::kRotationNormal),
+ 	  _texCoords(), _glFilter(GL_NEAREST), _glTexture(0) {
+@@ -246,16 +249,35 @@
+ 	}
+ }
+ 
+ void Texture::updateArea(const Common::Rect &area, const Graphics::Surface &src) {
+ 	// Set the texture on the active texture unit.
+ 	if (!bind()) {
+ 		return;
+ 	}
++#ifdef IPHONE_IOS5
++
++
++
++
++	const bool replace = area.top == 0 && area.bottom >= (int)_logicalHeight &&
++		src.w == (int)_width && src.h == (int)_height;
++	static IOS5Metrics::Metric uploadMetric("texture_upload");
++	IOS5Metrics::Scope uploadScope(uploadMetric,
++		uint64_t(src.w) * (replace ? src.h : area.height()) * src.format.bytesPerPixel);
++	static IOS5Metrics::Metric fullMetric("upload_full"), rowsMetric("upload_rows");
++	IOS5Metrics::Scope modeScope(replace ? fullMetric : rowsMetric);
++	if (replace) {
++		GL_CALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 1));
++		GL_CALL(glTexImage2D(GL_TEXTURE_2D, 0, _glIntFormat, _width, _height,
++			0, _glFormat, _glType, src.getBasePtr(0, 0)));
++		return;
++	}
++#endif
+ 
+ 	// Update the actual texture.
+ 	// Although we have the area of the texture buffer we want to update we
+ 	// cannot take advantage of the left/right boundaries here because it is
+ 	// not possible to specify a pitch to glTexSubImage2D. To be precise, with
+ 	// plain OpenGL we could set GL_UNPACK_ROW_LENGTH to achieve this. However,
+ 	// OpenGL ES 1.0 does not support GL_UNPACK_ROW_LENGTH. Thus, we are left
+ 	// with the following options:
+@@ -273,9 +295,8 @@
+ 	GL_CALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 1));
+ 	GL_CALL(glTexSubImage2D(GL_TEXTURE_2D, 0, 0, area.top, src.w, area.height(),
+ 	                       _glFormat, _glType, src.getBasePtr(0, area.top)));
+ }
+ 
+ } // End of namespace OpenGL
+ 
+ #endif
+-
+diff --git a/graphics/opengl/texture.h b/graphics/opengl/texture.h
+--- a/graphics/opengl/texture.h
++++ b/graphics/opengl/texture.h
+@@ -157,16 +157,35 @@
+ 	/**
+ 	 * Obtain texture name.
+ 	 *
+ 	 * Beware that the texture name changes whenever create is used.
+ 	 * destroy will invalidate the texture name.
+ 	 */
+ 	GLuint getGLTexture() const { return _glTexture; }
+ 
++#ifdef IPHONE_IOS5
++
++
++	void setSharedName(GLuint name, uint width, uint height, const GLfloat *coords) {
++		_glTexture = name;
++		_width = _logicalWidth = width;
++		_height = _logicalHeight = height;
++		computeTexCoords();
++		if (coords) {
++			for (uint i = 0; i != 4; ++i) {
++				const GLfloat u = _texCoords[i*2], v = _texCoords[i*2+1];
++				for (uint a = 0; a != 2; ++a)
++					_texCoords[i*2+a] = (1-u)*(1-v)*coords[a] + u*(1-v)*coords[2+a] +
++						(1-u)*v*coords[4+a] + u*v*coords[6+a];
++			}
++		}
++	}
++#endif
++
+ 	static inline const Graphics::PixelFormat getRGBPixelFormat() {
+ 		return Graphics::PixelFormat::createFormatRGB24();
+ 	}
+ 
+ 	static inline const Graphics::PixelFormat getRGBAPixelFormat() {
+ 		return Graphics::PixelFormat::createFormatRGBA32();
+ 	}
+ 
