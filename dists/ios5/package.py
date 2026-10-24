@@ -7,6 +7,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import shlex
 import subprocess
 import tempfile
 
@@ -29,7 +30,7 @@ def run(command):
 
 if full:
     run(['python3', support/'check_full.py', '--source', source, '--build', build, build/'scummvm'])
-run([os.environ['CXX'], '-std=c++11', '-O2', support/'runtime-probe.mm', '-DIOS5_FULL_DEPS', '-I'+str(prefix/'include'), '-L'+str(prefix/'lib'), '-lfluidsynth', '-lcurl', '-lssl', '-lcrypto', '-lz', '-lc++', '-framework', 'Foundation', '-lobjc', '-Wl,-no_data_const', '-o', build/'runtime-probe'])
+run(shlex.split(os.environ['CXX']) + ['-std=c++11', '-O2', support/'runtime-probe.mm', '-DIOS5_FULL_DEPS', '-I'+str(prefix/'include'), '-L'+str(prefix/'lib'), '-lfluidsynth', '-lcurl', '-lssl', '-lcrypto', '-lz', '-lc++', '-framework', 'Foundation', '-lobjc', '-Wl,-no_data_const', '-o', build/'runtime-probe'])
 run([tools/'ldid', '-Hsha1', '-S', build/'runtime-probe'])
 run(['python3', support/'audit.py', build/'runtime-probe'])
 with tempfile.TemporaryDirectory(prefix='ios5-package-', dir=build) as temporary:
