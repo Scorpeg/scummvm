@@ -35,6 +35,8 @@ struct CubeRequest {
 };
 
 class CubeRenderer {
+	unsigned _uploadProgram, _uploadTexture, _uploadFramebuffer;
+	int _sourceXLocation, _sourceYLocation, _optionsLocation;
 	unsigned _program, _cube, _framebuffer, _output, _vertices;
 	unsigned _width, _height;
 	int _originLocation, _stepXLocation, _stepYLocation;
@@ -42,7 +44,6 @@ class CubeRenderer {
 	unsigned _sourceBpp;
 	bool _version2, _ignoreRightPixel, _sourceBgra, _failed, _announced;
 	size_t _sourcePitch;
-	byte *_facePixels;
 	float _view[9];
 	bool _viewValid, _viewLinear;
 	bool configureFiltering(const CubeRequest &request);
@@ -62,5 +63,5 @@ private:
 	CubeRenderer &operator=(const CubeRenderer &);
 };
 
-}
+} // namespace PhoenixVR
 #endif

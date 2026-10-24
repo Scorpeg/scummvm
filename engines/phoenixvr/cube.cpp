@@ -25,9 +25,8 @@
 #include "common/endian.h"
 #include "common/textconsole.h"
 #include "graphics/opengl/system_headers.h"
-#include "phoenixvr/cube_texture.h"
-#include "phoenixvr/detection.h"
 #include "phoenixvr/cube.h"
+#include "phoenixvr/detection.h"
 #include "phoenixvr/opengl_state.h"
 
 namespace PhoenixVR {
@@ -50,12 +49,41 @@ GLuint compile(GLenum type, const char *source) {
 	}
 	return shader;
 }
+GLuint createProgram(const char *vertex, const char *fragment) {
+	GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment);
+	if (!vs || !fs) {
+		if (vs)
+			glDeleteShader(vs);
+		if (fs)
+			glDeleteShader(fs);
+		return 0;
+	}
+	GLuint program = glCreateProgram();
+	glAttachShader(program, vs);
+	glAttachShader(program, fs);
+	glBindAttribLocation(program, 0, "position");
+	glLinkProgram(program);
+	glDeleteShader(vs);
+	glDeleteShader(fs);
+	GLint ok = 0;
+	glGetProgramiv(program, GL_LINK_STATUS, &ok);
+	if (!ok) {
+		char message[1024] = {};
+		glGetProgramInfoLog(program, sizeof(message), nullptr, message);
+		warning("PhoenixVR: panorama link failed: %s", message);
+		glDeleteProgram(program);
+		return 0;
+	}
+	return program;
 }
 
-CubeRenderer::CubeRenderer() : _program(0), _cube(0), _framebuffer(0), _output(0), _vertices(0), _width(0), _height(0),
-									   _originLocation(-1), _stepXLocation(-1), _stepYLocation(-1), _source(nullptr),
-									   _sourceBpp(0), _version2(false), _ignoreRightPixel(false), _sourceBgra(false), _failed(false), _announced(false), _sourcePitch(0),
-									   _facePixels(nullptr), _viewValid(false), _viewLinear(false) {}
+} // namespace
+
+CubeRenderer::CubeRenderer() : _uploadProgram(0), _uploadTexture(0), _uploadFramebuffer(0),
+							   _sourceXLocation(-1), _sourceYLocation(-1), _optionsLocation(-1), _program(0), _cube(0), _framebuffer(0), _output(0), _vertices(0), _width(0), _height(0),
+							   _originLocation(-1), _stepXLocation(-1), _stepYLocation(-1), _source(nullptr),
+							   _sourceBpp(0), _version2(false), _ignoreRightPixel(false), _sourceBgra(false), _failed(false), _announced(false), _sourcePitch(0),
+							   _viewValid(false), _viewLinear(false) {}
 
 CubeRenderer::~CubeRenderer() {
 	release();
@@ -72,9 +100,14 @@ void CubeRenderer::release() {
 		glDeleteTextures(1, &_output);
 	if (_framebuffer)
 		glDeleteFramebuffers(1, &_framebuffer);
-	delete[] _facePixels;
+	if (_uploadProgram)
+		glDeleteProgram(_uploadProgram);
+	if (_uploadTexture)
+		glDeleteTextures(1, &_uploadTexture);
+	if (_uploadFramebuffer)
+		glDeleteFramebuffers(1, &_uploadFramebuffer);
+	_uploadProgram = _uploadTexture = _uploadFramebuffer = 0;
 	_program = _cube = _output = _framebuffer = _vertices = 0;
-	_facePixels = nullptr;
 	_viewValid = false;
 }
 
@@ -82,6 +115,9 @@ bool CubeRenderer::initialize() {
 	GLint limit = 0;
 	glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &limit);
 	if (limit < 512)
+		return false;
+	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &limit);
+	if (limit < 1024)
 		return false;
 	const char *vertex =
 		"attribute vec2 position;\n"
@@ -95,29 +131,9 @@ bool CubeRenderer::initialize() {
 		" vec3 ray = origin + (gl_FragCoord.x - 0.5) * stepX + (gl_FragCoord.y - 0.5) * stepY;\n"
 		" gl_FragColor = vec4(textureCube(panorama, ray).rgb, 1.0);\n"
 		"}\n";
-	GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment);
-	if (!vs || !fs) {
-		if (vs)
-			glDeleteShader(vs);
-		if (fs)
-			glDeleteShader(fs);
+	_program = createProgram(vertex, fragment);
+	if (!_program)
 		return false;
-	}
-	_program = glCreateProgram();
-	glAttachShader(_program, vs);
-	glAttachShader(_program, fs);
-	glBindAttribLocation(_program, 0, "position");
-	glLinkProgram(_program);
-	glDeleteShader(vs);
-	glDeleteShader(fs);
-	GLint ok = 0;
-	glGetProgramiv(_program, GL_LINK_STATUS, &ok);
-	if (!ok) {
-		char message[1024] = {};
-		glGetProgramInfoLog(_program, sizeof(message), nullptr, message);
-		warning("PhoenixVR: panorama link failed: %s", message);
-		return false;
-	}
 	_originLocation = glGetUniformLocation(_program, "origin");
 	_stepXLocation = glGetUniformLocation(_program, "stepX");
 	_stepYLocation = glGetUniformLocation(_program, "stepY");
@@ -135,61 +151,89 @@ bool CubeRenderer::initialize() {
 	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glGenTextures(1, &_output);
 	glGenFramebuffers(1, &_framebuffer);
-	_facePixels = new byte[512 * 512 * 4];
-	return _program && _cube && _output && _framebuffer && _facePixels && glGetError() == GL_NO_ERROR;
+	const char *uploadFragment =
+		"#ifdef GL_ES\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n"
+		"#else\nprecision mediump float;\n#endif\n#endif\n"
+		"uniform sampler2D tiles;\n"
+		"uniform vec3 sourceX, sourceY;\n"
+		"uniform vec2 options;\n"
+		"void main() {\n"
+		" vec3 pixel = vec3(floor(gl_FragCoord.xy), 1.0);\n"
+		" vec2 p = vec2(dot(pixel, sourceX), dot(pixel, sourceY));\n"
+		" p.x -= options.x * step(256.0, p.x);\n"
+		" vec2 quadrant = step(vec2(256.0), p);\n"
+		" float tile = mix(quadrant.x, 3.0 - quadrant.x, quadrant.y);\n"
+		" vec2 uv = (mod(p, 256.0) + vec2(0.5, tile * 256.0 + 0.5)) / vec2(256.0, 1024.0);\n"
+		" vec3 color = texture2D(tiles, uv).rgb;\n"
+		" gl_FragColor = vec4(mix(color, color.bgr, options.y), 1.0);\n"
+		"}\n";
+	_uploadProgram = createProgram(vertex, uploadFragment);
+	if (!_uploadProgram)
+		return false;
+	_sourceXLocation = glGetUniformLocation(_uploadProgram, "sourceX");
+	_sourceYLocation = glGetUniformLocation(_uploadProgram, "sourceY");
+	_optionsLocation = glGetUniformLocation(_uploadProgram, "options");
+	if (_sourceXLocation < 0 || _sourceYLocation < 0 || _optionsLocation < 0)
+		return false;
+	glUseProgram(_uploadProgram);
+	glUniform1i(glGetUniformLocation(_uploadProgram, "tiles"), 0);
+	glGenTextures(1, &_uploadTexture);
+	glBindTexture(GL_TEXTURE_2D, _uploadTexture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glGenFramebuffers(1, &_uploadFramebuffer);
+	return _program && _cube && _output && _framebuffer && _uploadTexture && _uploadFramebuffer && glGetError() == GL_NO_ERROR;
 }
 
 bool CubeRenderer::upload(const CubeRequest &r) {
 	static const unsigned faces[2][6] = {{4, 5, 3, 1, 0, 2}, {0, 3, 1, 2, 5, 4}};
+	static const GLfloat transforms[6][6] = {
+		{0, -1, 511, -1, 0, 511},
+		{0, 1, 0, 1, 0, 0},
+		{-1, 0, 511, 0, 1, 0},
+		{1, 0, 0, 0, -1, 511},
+		{0, -1, 511, -1, 0, 511},
+		{0, -1, 511, -1, 0, 511}};
+	const GLenum format = r.sourceBpp == 2 ? GL_RGB : GL_RGBA;
+	const GLenum type = r.sourceBpp == 2 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
 	glBindTexture(GL_TEXTURE_CUBE_MAP, _cube);
+	glBindTexture(GL_TEXTURE_2D, _uploadTexture);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	const bool packed565 = r.sourceBpp == 2 && !r.ignoreRightPixel;
+	glTexImage2D(GL_TEXTURE_2D, 0, format, 256, 1024, 0, format, type, nullptr);
+	glBindFramebuffer(GL_FRAMEBUFFER, _uploadFramebuffer);
+	glViewport(0, 0, 512, 512);
+	glUseProgram(_uploadProgram);
+	glUniform2f(_optionsLocation, r.ignoreRightPixel ? 1.0f : 0.0f,
+				r.sourceBpp == 4 && r.sourceBgra ? 1.0f : 0.0f);
+	glBindBuffer(GL_ARRAY_BUFFER, _vertices);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+	const GLboolean dither = glIsEnabled(GL_DITHER);
+	glDisable(GL_DITHER);
+	bool complete = true;
 	for (unsigned face = 0; face < 6; ++face) {
-		if (packed565)
-			CubeTexture::packFaceRGB565(_facePixels, r.source, r.sourcePitch, faces[r.version2 ? 1 : 0][face], face);
+		const byte *src = static_cast<const byte *>(r.source) + faces[r.version2 ? 1 : 0][face] * 1024 * r.sourcePitch;
+		if (r.sourcePitch == 256 * r.sourceBpp)
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1024, format, type, src);
 		else
-			for (unsigned y = 0; y < 512; ++y) {
-				for (unsigned x = 0; x < 512; ++x) {
-					unsigned sx, sy;
-					switch (face) {
-					case 1:
-						sx = y;
-						sy = x;
-						break;
-					case 2:
-						sx = 511 - x;
-						sy = y;
-						break;
-					case 3:
-						sx = x;
-						sy = 511 - y;
-						break;
-					default:
-						sx = 511 - y;
-						sy = 511 - x;
-						break;
-					}
-					if (r.ignoreRightPixel)
-						sx = ((2 * sx + 1) * 511) / 1024;
-					const unsigned tile = (sy < 256 ? (sx < 256 ? 0 : 1) : (sx < 256 ? 3 : 2));
-					const unsigned row = (faces[r.version2 ? 1 : 0][face] * 4 + tile) * 256 + (sy & 255);
-					const byte *src = static_cast<const byte *>(r.source) + row * r.sourcePitch + (sx & 255) * r.sourceBpp;
-					byte *dst = _facePixels + (y * 512 + x) * r.sourceBpp;
-					if (r.sourceBpp == 2) {
-						dst[0] = src[0];
-						dst[1] = src[1];
-					} else {
-						dst[0] = src[r.sourceBgra ? 2 : 0];
-						dst[1] = src[1];
-						dst[2] = src[r.sourceBgra ? 0 : 2];
-						dst[3] = 255;
-					}
-				}
-			}
-		const GLenum format = r.sourceBpp == 2 ? GL_RGB : GL_RGBA;
-		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, format, 512, 512, 0,
-					 format, r.sourceBpp == 2 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE, _facePixels);
+			for (unsigned row = 0; row < 1024; ++row)
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row, 256, 1, format, type, src + row * r.sourcePitch);
+		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
+		glTexImage2D(target, 0, format, 512, 512, 0, format, type, nullptr);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, _cube, 0);
+		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+			complete = false;
+			break;
+		}
+		glUniform3fv(_sourceXLocation, 1, transforms[face]);
+		glUniform3fv(_sourceYLocation, 1, transforms[face] + 3);
+		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	}
+	ScopedGLState::enable(GL_DITHER, dither);
+	if (!complete)
+		return false;
 	if (glGetError() != GL_NO_ERROR)
 		return false;
 	_source = r.source;
@@ -255,6 +299,12 @@ bool CubeRenderer::render(const CubeRequest &r) {
 		warning("PhoenixVR: panorama GPU unavailable; CPU fallback");
 		return false;
 	}
+	glDisable(GL_BLEND);
+	glDisable(GL_SCISSOR_TEST);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_CULL_FACE);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	if (!resize(r.width, r.height) || (uploadNeeded && !upload(r))) {
 		release();
 		_failed = true;
@@ -263,12 +313,6 @@ bool CubeRenderer::render(const CubeRequest &r) {
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
 	glViewport(0, 0, r.width, r.height);
-	glDisable(GL_BLEND);
-	glDisable(GL_SCISSOR_TEST);
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_STENCIL_TEST);
-	glDisable(GL_CULL_FACE);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	glUseProgram(_program);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, _cube);
 	if (!configureFiltering(r)) {
@@ -302,5 +346,5 @@ bool CubeRenderer::render(const CubeRequest &r) {
 	return true;
 }
 
-}
+} // namespace PhoenixVR
 #endif
