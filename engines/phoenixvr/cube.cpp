@@ -95,7 +95,7 @@ CubeRenderer::CubeRenderer() : _uploadProgram(0), _uploadTexture(0), _uploadFram
 							   _sourceXLocation(-1), _sourceYLocation(-1), _optionsLocation(-1), _program(0), _cube(0), _framebuffer(0), _output(0), _vertices(0), _width(0), _height(0),
 							   _originLocation(-1), _stepXLocation(-1), _stepYLocation(-1), _source(nullptr),
 							   _sourceBpp(0), _version2(false), _ignoreRightPixel(false), _sourceBgra(false), _failed(false), _announced(false), _sourcePitch(0),
-							   _viewValid(false), _viewLinear(false) {}
+							   _viewValid(false), _viewFilter(false) {}
 
 CubeRenderer::~CubeRenderer() {
 	release();
@@ -253,6 +253,7 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 		return false;
 	if (glGetError() != GL_NO_ERROR)
 		return false;
+
 	_source = r.source;
 	_sourceBpp = r.sourceBpp;
 	_version2 = r.version2;
@@ -281,8 +282,21 @@ bool CubeRenderer::resize(unsigned width, unsigned height) {
 }
 
 bool CubeRenderer::configureFiltering(const CubeRequest &r) {
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, r.linear ? GL_LINEAR : GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, r.linear ? GL_LINEAR : GL_NEAREST);
+	GLint minLinear = GL_LINEAR;
+	if (r.filter) {
+		if (glad_glGenerateMipmap) {
+			glad_glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+			minLinear = GL_LINEAR_MIPMAP_LINEAR;
+		}
+		if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) {
+			GLfloat maxAnisotropy = 1.0f;
+			glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
+			// FIXME: add option for max anisotropy?
+			glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
+		}
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, r.filter ? minLinear : GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, r.filter ? GL_LINEAR : GL_NEAREST);
 	return glGetError() == GL_NO_ERROR;
 }
 
@@ -300,7 +314,7 @@ bool CubeRenderer::render(const CubeRequest &r) {
 	memcpy(view + 3, r.stepX, sizeof(r.stepX));
 	memcpy(view + 6, r.stepY, sizeof(r.stepY));
 	if (_viewValid && !uploadNeeded && _width == r.width && _height == r.height &&
-		_viewLinear == r.linear && !memcmp(view, _view, sizeof(view))) {
+		_viewFilter == r.filter && !memcmp(view, _view, sizeof(view))) {
 		return true;
 	}
 	_viewValid = false;
@@ -354,7 +368,7 @@ bool CubeRenderer::render(const CubeRequest &r) {
 		return false;
 	}
 	memcpy(_view, view, sizeof(view));
-	_viewLinear = r.linear;
+	_viewFilter = r.filter;
 	_viewValid = true;
 	if (!_announced) {
 		debugC(1, kDebugGraphics, "PhoenixVR: cube GPU active texture=512x512x6 output=%ux%u readback=none", r.width, r.height);
