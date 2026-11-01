@@ -212,6 +212,7 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 	const GLboolean dither = glIsEnabled(GL_DITHER);
 	glDisable(GL_DITHER);
+	glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 	bool complete = true;
 	for (unsigned face = 0; face < 6; ++face) {
 		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
