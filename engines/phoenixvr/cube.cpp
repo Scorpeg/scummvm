@@ -39,19 +39,7 @@ void enableCubeSeamless() {
 #if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
 	if (OpenGLContext.type != OpenGL::kContextGL)
 		return;
-	bool supported = OpenGLContext.isGLVersionOrHigher(3, 2);
-	if (!supported && !OpenGLContext.isGLVersionOrHigher(3, 0)) {
-		const char *extensions = reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
-		const char *name = "GL_ARB_seamless_cube_map";
-		const size_t length = strlen(name);
-		for (const char *p = extensions; p && (p = strstr(p, name)); p += length) {
-			if ((p == extensions || p[-1] == ' ') && (!p[length] || p[length] == ' ')) {
-				supported = true;
-				break;
-			}
-		}
-	}
-	if (supported)
+	if (GLAD_GL_ARB_seamless_cube_map)
 		glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 #endif
 }
