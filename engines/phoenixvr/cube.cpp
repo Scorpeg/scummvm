@@ -214,6 +214,11 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	glDisable(GL_DITHER);
 	bool complete = true;
 	for (unsigned face = 0; face < 6; ++face) {
+		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
+		glTexImage2D(target, 0, format, 512, 512, 0, format, type, nullptr);
+	}
+
+	for (unsigned face = 0; face < 6; ++face) {
 		const byte *src = static_cast<const byte *>(r.source) + faces[r.version2 ? 1 : 0][face] * 1024 * r.sourcePitch;
 		if (r.sourcePitch == 256 * r.sourceBpp)
 			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1024, format, type, src);
@@ -221,7 +226,6 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 			for (unsigned row = 0; row < 1024; ++row)
 				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row, 256, 1, format, type, src + row * r.sourcePitch);
 		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
-		glTexImage2D(target, 0, format, 512, 512, 0, format, type, nullptr);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, _cube, 0);
 		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
 			complete = false;
