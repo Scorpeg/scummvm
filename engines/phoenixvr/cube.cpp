@@ -28,9 +28,48 @@
 #include "phoenixvr/cube.h"
 #include "phoenixvr/detection.h"
 #include "phoenixvr/opengl_state.h"
+#if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
+#include "graphics/opengl/context.h"
+#endif
 
 namespace PhoenixVR {
 namespace {
+
+class ScopedCubeSeamless {
+#if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
+	bool _supported = false;
+	GLboolean _enabled = GL_FALSE;
+#endif
+public:
+	ScopedCubeSeamless() {
+#if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
+		if (OpenGLContext.type != OpenGL::kContextGL)
+			return;
+		_supported = OpenGLContext.isGLVersionOrHigher(3, 2);
+		if (!_supported && !OpenGLContext.isGLVersionOrHigher(3, 0)) {
+			const char *extensions = reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
+			const char *name = "GL_ARB_seamless_cube_map";
+			const size_t length = strlen(name);
+			for (const char *p = extensions; p && (p = strstr(p, name)); p += length) {
+				if ((p == extensions || p[-1] == ' ') && (!p[length] || p[length] == ' ')) {
+					_supported = true;
+					break;
+				}
+			}
+		}
+		if (_supported) {
+			_enabled = glIsEnabled(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+			glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+		}
+#endif
+	}
+	~ScopedCubeSeamless() {
+#if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
+		if (_supported)
+			ScopedGLState::enable(GL_TEXTURE_CUBE_MAP_SEAMLESS, _enabled);
+#endif
+	}
+};
 
 GLuint compile(GLenum type, const char *source) {
 	GLuint shader = glCreateShader(type);
@@ -212,7 +251,6 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 	const GLboolean dither = glIsEnabled(GL_DITHER);
 	glDisable(GL_DITHER);
-	glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 	bool complete = true;
 	for (unsigned face = 0; face < 6; ++face) {
 		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
@@ -326,6 +364,7 @@ bool CubeRenderer::render(const CubeRequest &r) {
 		warning("PhoenixVR: panorama filtering failed; CPU fallback");
 		return false;
 	}
+	ScopedCubeSeamless seamless;
 	glUniform3fv(_originLocation, 1, r.origin);
 	glUniform3fv(_stepXLocation, 1, r.stepX);
 	glUniform3fv(_stepYLocation, 1, r.stepY);
