@@ -33,10 +33,10 @@
 #include "phoenixvr/angle.h"
 #include "phoenixvr/dct_tables.h"
 #include "phoenixvr/phoenixvr.h"
-#include "phoenixvr/region_set.h"
 #include "phoenixvr/region_outline.h"
-#include "phoenixvr/scene_decoder.h"
+#include "phoenixvr/region_set.h"
 #include "phoenixvr/renderer.h"
+#include "phoenixvr/scene_decoder.h"
 #include "video/4xm_utils.h"
 
 namespace PhoenixVR {
@@ -664,7 +664,7 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 		request.version2 = _v2;
 		request.ignoreRightPixel = _ignoreRightPixel;
 		request.dirty = _gpuDirty;
-		request.linear = ConfMan.getBool("filtering");
+		request.filter = ConfMan.getBool("filtering");
 		for (unsigned i = 0; i < 3; ++i) {
 			request.origin[i] = start.getData()[i];
 			request.stepX[i] = incrementX.getData()[i];

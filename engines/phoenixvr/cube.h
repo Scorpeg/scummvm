@@ -30,7 +30,7 @@ struct CubeRequest {
 	size_t sourcePitch;
 	unsigned sourceBpp, sourceWidth, sourceHeight;
 	unsigned width, height;
-	bool version2, ignoreRightPixel, dirty, linear, sourceBgra;
+	bool version2, ignoreRightPixel, dirty, filter, sourceBgra;
 	float origin[3], stepX[3], stepY[3];
 };
 
@@ -45,7 +45,7 @@ class CubeRenderer {
 	bool _version2, _ignoreRightPixel, _sourceBgra, _failed, _announced;
 	size_t _sourcePitch;
 	float _view[9];
-	bool _viewValid, _viewLinear;
+	bool _viewValid, _viewFilter;
 	bool configureFiltering(const CubeRequest &request);
 	void release();
 	bool initialize();
