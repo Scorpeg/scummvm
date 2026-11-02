@@ -142,7 +142,7 @@ bool CubeRenderer::initialize() {
 		"uniform vec3 origin, stepX, stepY;\n"
 		"void main() {\n"
 		" vec3 ray = origin + (gl_FragCoord.x - 0.5) * stepX + (gl_FragCoord.y - 0.5) * stepY;\n"
-		" gl_FragColor = vec4(textureCube(panorama, ray).rgb, 1.0);\n"
+		" gl_FragColor = vec4(textureCube(panorama, ray, -0.5).rgb, 1.0);\n"
 		"}\n";
 	_program = createProgram(vertex, fragment);
 	if (!_program)
