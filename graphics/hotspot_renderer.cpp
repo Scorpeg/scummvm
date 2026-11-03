@@ -200,7 +200,7 @@ void HotspotRenderer::renderOverlay(OSystem &system, MarkerShape markerShape, bo
 		system.clearOverlay();
 		system.grabOverlay(_overlay);
 	}
-	renderFrame(&_overlay, _hotspots, gameWidth, gameHeight, width, height, format, markerShape, font);
+	renderFrame(&_overlay, _hotspots, gameWidth, gameHeight, width, height, format, markerShape, font, system.getGameRenderRect());
 	Common::Rect upload = _drawBounds;
 	if (format.aBits())
 		upload = unionRects(upload, _previousBounds);
@@ -223,39 +223,32 @@ void HotspotRenderer::render(Surface *surface,
 		int overlayWidth, int overlayHeight,
 		const PixelFormat &format,
 		MarkerShape markerShape,
-		bool showText) {
+		bool showText,
+		const Common::Rect &gameArea) {
 	const Font *font = showText ? (_style.font ? _style.font : FontMan.getFontByUsage(FontManager::kGUIFont)) : nullptr;
-	renderFrame(surface, hotspots, gameWidth, gameHeight, overlayWidth, overlayHeight, format, markerShape, font);
+	renderFrame(surface, hotspots, gameWidth, gameHeight, overlayWidth, overlayHeight, format, markerShape, font, gameArea);
 }
 
 void HotspotRenderer::renderFrame(Surface *surface, const Common::Array<HotspotInfo> &hotspots,
 		int gameWidth, int gameHeight, int overlayWidth, int overlayHeight,
-		const PixelFormat &format, MarkerShape markerShape, const Font *font) {
+		const PixelFormat &format, MarkerShape markerShape, const Font *font,
+		const Common::Rect &gameArea) {
 	if (!surface || hotspots.empty())
 		return;
 
 	if (format.bytesPerPixel < 2 || gameWidth <= 0 || gameHeight <= 0 || overlayWidth <= 0 || overlayHeight <= 0)
 		return;
 
-	const float rawScaleX = (float)overlayWidth / (float)gameWidth;
-	const float rawScaleY = (float)overlayHeight / (float)gameHeight;
-
-	_sizeScale = _style.scaleWithGame ? MIN(rawScaleX, rawScaleY) : 1.0f;
-	_markerSize = MAX(2, (int)(_style.markerSize * _sizeScale));
-	_pointRadius = MAX(1, (int)(_style.pointRadius * _sizeScale));
-	_lineThickness = MAX(1, (int)(_style.lineThickness * _sizeScale));
 	_markerBlendColor = format.aBits() ? format.ARGBToColor(_style.markerOpacity,
 		_style.markerColor >> 16, _style.markerColor >> 8, _style.markerColor) : 0;
 
 	_drawBounds = Common::Rect();
-	prepareRender(hotspots, gameWidth, gameHeight, overlayWidth, overlayHeight);
+	prepareRender(hotspots, gameWidth, gameHeight, overlayWidth, overlayHeight, gameArea);
 
 	_positions.resize(hotspots.size());
 	_labelLayouts.resize(hotspots.size());
-	for (uint i = 0; i < hotspots.size(); ++i) {
-		_positions[i] = placeHotspot(hotspots[i], Common::Point(
-			(int)(hotspots[i].position.x * rawScaleX), (int)(hotspots[i].position.y * rawScaleY)));
-	}
+	for (uint i = 0; i < hotspots.size(); ++i)
+		_positions[i] = placeHotspot(hotspots[i]);
 
 	prepareCollisionRects(hotspots);
 
@@ -282,6 +275,23 @@ void HotspotRenderer::renderFrame(Surface *surface, const Common::Array<HotspotI
 					overlayWidth, overlayHeight, format, font);
 	}
 	_drawBounds.clip(Common::Rect(overlayWidth, overlayHeight));
+}
+
+void HotspotRenderer::prepareRender(const Common::Array<HotspotInfo> &hotspots,
+		int gameWidth, int gameHeight, int overlayWidth, int overlayHeight, const Common::Rect &gameArea) {
+	_screenSize = Common::Point(gameWidth, gameHeight);
+	_gameArea = gameArea.isEmpty() ? Common::Rect(overlayWidth, overlayHeight) : gameArea;
+
+	_sizeScale = _style.scaleWithGame ? MIN((float)_gameArea.width() / gameWidth, (float)_gameArea.height() / gameHeight) : 1.0f;
+	_markerSize = MAX(2, (int)(_style.markerSize * _sizeScale));
+	_pointRadius = MAX(1, (int)(_style.pointRadius * _sizeScale));
+	_lineThickness = MAX(1, (int)(_style.lineThickness * _sizeScale));
+}
+
+Common::Point HotspotRenderer::placeHotspot(const HotspotInfo &hotspot) {
+	return Common::Point(
+		_gameArea.left + hotspot.position.x * _gameArea.width() / _screenSize.x,
+		_gameArea.top + hotspot.position.y * _gameArea.height() / _screenSize.y);
 }
 
 void HotspotRenderer::prepareCollisionRects(const Common::Array<HotspotInfo> &hotspots) {

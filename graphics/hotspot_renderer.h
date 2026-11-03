@@ -126,7 +126,8 @@ public:
 		int overlayWidth, int overlayHeight,
 		const PixelFormat &format,
 		MarkerShape markerShape,
-		bool showText);
+		bool showText,
+		const Common::Rect &gameArea = Common::Rect());
 
 protected:
 	struct LabelLayout {
@@ -145,9 +146,9 @@ protected:
 	bool isLabelSlotFree(const Common::Rect &candidate, int borderGrow) const;
 	void addDrawRect(Common::Rect rect);
 	virtual void prepareRender(const Common::Array<HotspotInfo> &hotspots,
-		int gameWidth, int gameHeight, int overlayWidth, int overlayHeight) {}
+		int gameWidth, int gameHeight, int overlayWidth, int overlayHeight, const Common::Rect &gameArea);
 	void prepareCollisionRects(const Common::Array<HotspotInfo> &hotspots);
-	virtual Common::Point placeHotspot(const HotspotInfo &hotspot, Common::Point position) { return position; }
+	virtual Common::Point placeHotspot(const HotspotInfo &hotspot);
 	virtual void drawMarker(Surface *surface, const HotspotInfo &hotspot, int x, int y, const PixelFormat &format, MarkerShape markerShape);
 	virtual void drawLeaderLine(Surface *surface, const LabelLayout &layout, const HotspotInfo &hotspot,
 		Common::Point markerPos, int overlayWidth, int overlayHeight, const PixelFormat &format);
@@ -196,7 +197,8 @@ private:
 		int overlayWidth, int overlayHeight, const PixelFormat &format, const Font *font, bool background);
 	void renderFrame(Surface *surface, const Common::Array<HotspotInfo> &hotspots,
 		int gameWidth, int gameHeight, int overlayWidth, int overlayHeight,
-		const PixelFormat &format, MarkerShape markerShape, const Font *font);
+		const PixelFormat &format, MarkerShape markerShape, const Font *font,
+		const Common::Rect &gameArea);
 
 protected:
 	HotspotStyle _style;
@@ -205,6 +207,8 @@ protected:
 	int _pointRadius;   ///< Scaled radius of point marker
 	int _lineThickness; ///< Scaled thickness of lines for markers and text boxes
 	uint32 _markerBlendColor; ///< Precomputed ARGBToColor(markerOpacity, markerColor) for alpha-blended overlays, recomputed once per renderFrame()
+	Common::Point _screenSize; ///< Game screen size
+	Common::Rect _gameArea;    ///< Game area within the overlay
 
 	void drawCrosshairMarker(Surface *surface, int x, int y, const PixelFormat &format);
 	void drawSquareMarker(Surface *surface, int x, int y, const PixelFormat &format);

@@ -1481,6 +1481,13 @@ public:
 	 */
 	virtual Common::Rect getSafeOverlayArea(int16 *width = nullptr, int16 *height = nullptr) const;
 
+	/**
+	 * Return the game's draw area.
+	 *
+	 * @return The game's draw area in overlay coordinates.
+	 */
+	virtual Common::Rect getGameRenderRect() const;
+
 	/** @} */
 
 

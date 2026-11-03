@@ -236,6 +236,10 @@ Common::Rect OSystem::getSafeOverlayArea(int16 *width, int16 *height) const {
 	return Common::Rect(w, h);
 }
 
+Common::Rect OSystem::getGameRenderRect() const {
+	return Common::Rect(getOverlayWidth(), getOverlayHeight());
+}
+
 void OSystem::fatalError() {
 	quit();
 	exit(1);

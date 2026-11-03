@@ -112,6 +112,9 @@ public:
 		if (height) *height = h;
 		return Common::Rect(w, h);
 	}
+	virtual Common::Rect getGameRenderRect() const {
+		return Common::Rect(getOverlayWidth(), getOverlayHeight());
+	}
 	virtual float getHiDPIScreenFactor() const { return 1.0f; }
 
 	virtual bool showMouse(bool visible) = 0;

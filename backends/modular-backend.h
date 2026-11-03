@@ -119,6 +119,7 @@ public:
 	int16 getOverlayHeight() const override final;
 	int16 getOverlayWidth() const override final;
 	Common::Rect getSafeOverlayArea(int16 *width, int16 *height) const override final;
+	Common::Rect getGameRenderRect() const override final;
 
 	float getHiDPIScreenFactor() const override final;
 
