@@ -46,6 +46,7 @@ class CubeRenderer {
 	size_t _sourcePitch;
 	float _view[9];
 	bool _viewValid, _viewFilter;
+	bool _mipmapsValid, _filterValid, _filterLinear;
 	bool configureFiltering(const CubeRequest &request);
 	void release();
 	bool initialize();
@@ -55,7 +56,7 @@ class CubeRenderer {
 public:
 	CubeRenderer();
 	~CubeRenderer();
-	bool render(const CubeRequest &request);
+	bool render(const CubeRequest &request, unsigned targetFramebuffer = 0);
 	unsigned texture() const { return _output; }
 
 private:

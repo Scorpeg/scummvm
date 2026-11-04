@@ -21,7 +21,6 @@
 
 #include "common/scummsys.h"
 #ifdef USE_OPENGL_SHADERS
-#include "common/config-manager.h"
 #include "common/debug.h"
 #include "common/system.h"
 #include "common/textconsole.h"
@@ -406,11 +405,8 @@ public:
 			ScopedGLState state;
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, _targets[_current]);
-			GLint filter = ConfMan.getBool("filtering") ? GL_LINEAR : GL_NEAREST;
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-			quad(_targets[_current], bounds(), 0, 0, 0, 0, 1, 1, 0);
 			textureParameters();
+			quad(_targets[_current], bounds(), 0, 0, 0, 0, 1, 1, 0);
 		}
 		g_system->updateScreen();
 	}
@@ -420,14 +416,13 @@ public:
 	bool supportsCube() const override { return true; }
 
 	bool drawCube(const CubeRequest &request, const Common::Array<RenderPixel> &hints, const int *rows) override {
-		if (!_cube.render(request))
-			return false;
 		ScopedGLState state;
 		const int output = _current;
-		if (rows)
-			_current = 2;
-		target(_current);
-		quad(_cube.texture(), bounds());
+		const int destination = rows ? 2 : output;
+		target(destination);
+		if (!_cube.render(request, _framebuffer))
+			return false;
+		_current = destination;
 		drawPixels(hints);
 		_current = output;
 		if (rows) {

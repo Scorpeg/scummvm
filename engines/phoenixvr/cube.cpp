@@ -95,13 +95,15 @@ CubeRenderer::CubeRenderer() : _uploadProgram(0), _uploadTexture(0), _uploadFram
 							   _sourceXLocation(-1), _sourceYLocation(-1), _optionsLocation(-1), _program(0), _cube(0), _framebuffer(0), _output(0), _vertices(0), _width(0), _height(0),
 							   _originLocation(-1), _stepXLocation(-1), _stepYLocation(-1), _source(nullptr),
 							   _sourceBpp(0), _version2(false), _ignoreRightPixel(false), _sourceBgra(false), _failed(false), _announced(false), _sourcePitch(0),
-							   _viewValid(false), _viewFilter(false) {}
+							   _viewValid(false), _viewFilter(false),
+							   _mipmapsValid(false), _filterValid(false), _filterLinear(false) {}
 
 CubeRenderer::~CubeRenderer() {
 	release();
 }
 
 void CubeRenderer::release() {
+	_mipmapsValid = _filterValid = false;
 	if (_vertices)
 		glDeleteBuffers(1, &_vertices);
 	if (_program)
@@ -201,6 +203,7 @@ bool CubeRenderer::initialize() {
 }
 
 bool CubeRenderer::upload(const CubeRequest &r) {
+	_mipmapsValid = _filterValid = false;
 	static const unsigned faces[2][6] = {{4, 5, 3, 1, 0, 2}, {0, 3, 1, 2, 5, 4}};
 	static const GLfloat transforms[6][6] = {
 		{0, -1, 511, -1, 0, 511},
@@ -212,6 +215,8 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	const GLenum format = r.sourceBpp == 2 ? GL_RGB : GL_RGBA;
 	const GLenum type = r.sourceBpp == 2 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE;
 	glBindTexture(GL_TEXTURE_CUBE_MAP, _cube);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glBindTexture(GL_TEXTURE_2D, _uploadTexture);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	glTexImage2D(GL_TEXTURE_2D, 0, format, 256, 1024, 0, format, type, nullptr);
@@ -228,7 +233,7 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	bool complete = true;
 	for (unsigned face = 0; face < 6; ++face) {
 		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
-		glTexImage2D(target, 0, format, 512, 512, 0, format, type, nullptr);
+		glTexImage2D(target, 0, GL_RGBA, 512, 512, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 	}
 
 	for (unsigned face = 0; face < 6; ++face) {
@@ -282,25 +287,37 @@ bool CubeRenderer::resize(unsigned width, unsigned height) {
 }
 
 bool CubeRenderer::configureFiltering(const CubeRequest &r) {
+	if (_filterValid && _filterLinear == r.filter)
+		return true;
 	GLint minLinear = GL_LINEAR;
 	if (r.filter) {
 		if (glad_glGenerateMipmap) {
-			glad_glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+			if (!_mipmapsValid) {
+				glad_glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+				if (glGetError() != GL_NO_ERROR)
+					return false;
+				_mipmapsValid = true;
+			}
 			minLinear = GL_LINEAR_MIPMAP_LINEAR;
 		}
-		if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) {
-			GLfloat maxAnisotropy = 1.0f;
-			glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
-			// FIXME: add option for max anisotropy?
-			glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
+	}
+	if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) {
+		GLfloat anisotropy = 1.0f;
+		if (r.filter) {
+			glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &anisotropy);
 		}
+		glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_ANISOTROPY_EXT, anisotropy);
 	}
 	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, r.filter ? minLinear : GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, r.filter ? GL_LINEAR : GL_NEAREST);
-	return glGetError() == GL_NO_ERROR;
+	if (glGetError() != GL_NO_ERROR)
+		return false;
+	_filterLinear = r.filter;
+	_filterValid = true;
+	return true;
 }
 
-bool CubeRenderer::render(const CubeRequest &r) {
+bool CubeRenderer::render(const CubeRequest &r, unsigned targetFramebuffer) {
 	if (_failed || !r.source || !r.width || !r.height || r.width > 1024 || r.height > 1024 ||
 		r.sourceWidth != 256 || r.sourceHeight != 6144 ||
 		(r.sourceBpp != 2 && r.sourceBpp != 4) ||
@@ -313,7 +330,7 @@ bool CubeRenderer::render(const CubeRequest &r) {
 	memcpy(view, r.origin, sizeof(r.origin));
 	memcpy(view + 3, r.stepX, sizeof(r.stepX));
 	memcpy(view + 6, r.stepY, sizeof(r.stepY));
-	if (_viewValid && !uploadNeeded && _width == r.width && _height == r.height &&
+	if (!targetFramebuffer && _viewValid && !uploadNeeded && _width == r.width && _height == r.height &&
 		_viewFilter == r.filter && !memcmp(view, _view, sizeof(view))) {
 		return true;
 	}
@@ -342,7 +359,7 @@ bool CubeRenderer::render(const CubeRequest &r) {
 		warning("PhoenixVR: panorama GPU allocation/upload failed; CPU fallback");
 		return false;
 	}
-	glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, targetFramebuffer ? targetFramebuffer : _framebuffer);
 	glViewport(0, 0, r.width, r.height);
 	glUseProgram(_program);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, _cube);
@@ -369,7 +386,7 @@ bool CubeRenderer::render(const CubeRequest &r) {
 	}
 	memcpy(_view, view, sizeof(view));
 	_viewFilter = r.filter;
-	_viewValid = true;
+	_viewValid = !targetFramebuffer;
 	if (!_announced) {
 		debugC(1, kDebugGraphics, "PhoenixVR: cube GPU active texture=512x512x6 output=%ux%u readback=none", r.width, r.height);
 		_announced = true;
