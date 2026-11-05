@@ -26,6 +26,10 @@
 #include "common/textconsole.h"
 #include "graphics/opengl/system_headers.h"
 #include "phoenixvr/cube.h"
+#ifdef SCUMMVM_NEON
+#include "common/array.h"
+#include "phoenixvr/scene_neon.h"
+#endif
 #include "phoenixvr/detection.h"
 #include "phoenixvr/opengl_state.h"
 #if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
@@ -34,6 +38,25 @@
 
 namespace PhoenixVR {
 namespace {
+
+#ifdef SCUMMVM_NEON
+bool generateCubeMipmapsNEON(const CubeRequest &r) {
+	Common::Array<byte> base, reduced;
+	base.resize(512 * 512 * 4);
+	reduced.resize(256 * 256 * 4);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	for (unsigned face = 0; face < 6; ++face) {
+		SceneNEON::packMipFace(r, face, base.data());
+		byte *source = base.data(), *target = reduced.data();
+		for (unsigned size = 512, level = 1; size > 1; size /= 2, ++level) {
+			SceneNEON::mipHalfNEON(source, target, size, 0);
+			glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, level, 0, 0, size / 2, size / 2, GL_RGBA, GL_UNSIGNED_BYTE, target);
+			SWAP(source, target);
+		}
+	}
+	return glGetError() == GL_NO_ERROR;
+}
+#endif
 
 void enableCubeSeamless() {
 #if !USE_FORCED_GLES && !USE_FORCED_GLES2 && defined(GL_TEXTURE_CUBE_MAP_SEAMLESS)
@@ -164,6 +187,11 @@ bool CubeRenderer::initialize() {
 	glBindTexture(GL_TEXTURE_CUBE_MAP, _cube);
 	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#ifdef SCUMMVM_NEON
+	for (unsigned face = 0; face < 6; ++face)
+		for (unsigned size = 512, level = 0; size; size /= 2, ++level)
+			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, level, GL_RGBA, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+#endif
 	glGenTextures(1, &_output);
 	glGenFramebuffers(1, &_framebuffer);
 	const char *uploadFragment =
@@ -231,10 +259,12 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	const GLboolean dither = glIsEnabled(GL_DITHER);
 	glDisable(GL_DITHER);
 	bool complete = true;
+#ifndef SCUMMVM_NEON
 	for (unsigned face = 0; face < 6; ++face) {
 		const GLenum target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
 		glTexImage2D(target, 0, GL_RGBA, 512, 512, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 	}
+#endif
 
 	for (unsigned face = 0; face < 6; ++face) {
 		const byte *src = static_cast<const byte *>(r.source) + faces[r.version2 ? 1 : 0][face] * 1024 * r.sourcePitch;
@@ -293,7 +323,13 @@ bool CubeRenderer::configureFiltering(const CubeRequest &r) {
 	if (r.filter) {
 		if (glad_glGenerateMipmap) {
 			if (!_mipmapsValid) {
+#ifdef SCUMMVM_NEON
+				const bool neon = SceneNEON::available() && generateCubeMipmapsNEON(r);
+				if (!neon)
+					glad_glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+#else
 				glad_glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+#endif
 				if (glGetError() != GL_NO_ERROR)
 					return false;
 				_mipmapsValid = true;
