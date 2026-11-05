@@ -39,6 +39,7 @@ const DebugChannelDef PhoenixVRMetaEngineDetection::debugFlagList[] = {
 PhoenixVRMetaEngineDetection::PhoenixVRMetaEngineDetection() : AdvancedMetaEngineDetection(
 																   PhoenixVR::gameDescriptions, PhoenixVR::phoenixvrGames) {
 	_flags = kADFlagMatchFullPaths;
+	_guiOptions = GUIO4(GAMEOPTION_DISABLE_DITHERING, GAMEOPTION_DISABLE_MIPMAPS, GAMEOPTION_DISABLE_ANISOTROPY, GAMEOPTION_DISABLE_WAVES);
 }
 
 REGISTER_PLUGIN_STATIC(PHOENIXVR_DETECTION, PLUGIN_TYPE_ENGINE_DETECTION, PhoenixVRMetaEngineDetection);

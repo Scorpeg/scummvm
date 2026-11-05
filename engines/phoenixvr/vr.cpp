@@ -210,6 +210,7 @@ struct Quantisation {
 };
 
 void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte *acPtr, uint acSize, const byte *dcPtr, uint dcSize, int quality, const Common::Array<uint32> *prefix = nullptr) {
+	const bool dither = !ConfMan.hasKey("phoenixvr_disable_dithering") || !ConfMan.getBool("phoenixvr_disable_dithering");
 	Quantisation quant(quality);
 
 	uint huffOffset = 0;
@@ -255,7 +256,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 	};
 
 #ifdef SCUMMVM_NEON
-	if (SceneNEON::available() && !prefix && pic.format.bytesPerPixel == 2 &&
+	if (dither && SceneNEON::available() && !prefix && pic.format.bytesPerPixel == 2 &&
 		((pic.w == kVRImageWidth && pic.h == kVRImageHeight) || (pic.w == kStaticImageWidth && pic.h == kStaticImageHeight))) {
 		Common::Array<int32> band, next;
 		band.resize(pic.w * 8 * 4);
@@ -283,7 +284,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 	}
 #endif
 
-	if (!prefix && pic.format.bytesPerPixel == 2 &&
+	if (dither && !prefix && pic.format.bytesPerPixel == 2 &&
 		((pic.w == kVRImageWidth && pic.h == kVRImageHeight) || (pic.w == kStaticImageWidth && pic.h == kStaticImageHeight))) {
 		const int bandSize = pic.w * 8;
 		Common::Array<int64> red, green, blue, nextRed, nextGreen, nextBlue;
@@ -383,7 +384,17 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 			}
 		} break;
 		case 2: {
-			putRGB565DitheredBlock(pic, dstX, dstY, block);
+			if (dither) {
+				putRGB565DitheredBlock(pic, dstX, dstY, block);
+			} else {
+				for (unsigned y = 0; y < 8; ++y) {
+					uint16 *dst = static_cast<uint16 *>(pic.getBasePtr(dstX, dstY + y));
+					for (unsigned x = 0; x < 8; ++x) {
+						const unsigned i = y * 8 + x;
+						dst[x] = YCbCr2RGB(pic.format, block[0][i] + 128, block[1][i], block[2][i]);
+					}
+				}
+			}
 		} break;
 		}
 	}
@@ -640,6 +651,7 @@ bool VR::Animation::render(Graphics::Surface &pic, float dt) {
 
 template<typename ColorType>
 void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, RegionSet *regSet) {
+	const bool showWaves = _showWaves && (!ConfMan.hasKey("phoenixvr_disable_waves") || !ConfMan.getBool("phoenixvr_disable_waves"));
 	auto *screen = &renderer->softwareSurface();
 	auto w = screen->w;
 	auto h = screen->h;
@@ -665,7 +677,7 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 		_hint = hint;
 	}
 
-	if (_showWaves)
+	if (showWaves)
 		_wavesT += dt * 20;
 
 	const Graphics::PixelFormat rgb565(2, 5, 6, 5, 0, 11, 5, 0, 0);
@@ -691,6 +703,8 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 		request.ignoreRightPixel = _ignoreRightPixel;
 		request.dirty = _gpuDirty;
 		request.filter = ConfMan.getBool("filtering");
+		request.mipmaps = !ConfMan.hasKey("phoenixvr_disable_mipmaps") || !ConfMan.getBool("phoenixvr_disable_mipmaps");
+		request.anisotropy = !ConfMan.hasKey("phoenixvr_disable_anisotropy") || !ConfMan.getBool("phoenixvr_disable_anisotropy");
 		for (unsigned i = 0; i < 3; ++i) {
 			request.origin[i] = start.getData()[i];
 			request.stepX[i] = incrementX.getData()[i];
@@ -706,21 +720,21 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 				});
 		}
 		Common::Array<int> rows;
-		if (_showWaves) {
+		if (showWaves) {
 			rows.resize(h);
 			for (int y = 0; y < h; ++y) {
 				int offset = static_cast<int>(sin((y * 0.039269909f + _wavesT * 0.40000001f)) * -3);
 				rows[y] = y + offset < 0 ? y : MIN<int>(h - 1, y + offset);
 			}
 		}
-		if (renderer->drawCube(request, hints, _showWaves ? rows.data() : nullptr)) {
+		if (renderer->drawCube(request, hints, showWaves ? rows.data() : nullptr)) {
 			_gpuDirty = false;
 			return;
 		}
 	}
 	Vector3d line = start;
 	float regX = 0, regY = 0, regDX = 0, regDY = 0;
-	if (regSet && _showWaves) {
+	if (regSet && showWaves) {
 		regY = ay - fov / 2;
 		regDX = fov / w;
 		regDY = fov / h;
@@ -735,7 +749,7 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 	ColorType *dstPixels = static_cast<ColorType *>(screen->getPixels());
 	const auto dstPixelsPitchIncrement = screen->pitch / sizeof(ColorType);
 	for (int dstY = 0; dstY != h; ++dstY, line += incrementY, dstPixels += dstPixelsPitchIncrement) {
-		if (regSet && _showWaves) {
+		if (regSet && showWaves) {
 			regX = ax - fov / 2;
 			if (regX < 0)
 				regX += kTau;
@@ -743,7 +757,7 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 				regX -= kTau;
 		}
 		ColorType *dst = dstPixels;
-		if (_showWaves) {
+		if (showWaves) {
 			auto y = static_cast<int>(sin((dstY * 0.039269909f + _wavesT * 0.40000001f)) * -3);
 			if (dstY + y < 0)
 				y = 0;
@@ -763,7 +777,7 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 			srcY &= kVRTileSize - 1;
 			srcY += (tileId << 8);
 			auto color = _pic->getPixel(srcX, srcY);
-			if (regSet && _showWaves) {
+			if (regSet && showWaves) {
 				regX += regDX;
 				if (regX >= kTau)
 					regX -= kTau;
@@ -782,13 +796,13 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 			} else
 				*dst = color;
 		}
-		if (regSet && _showWaves) {
+		if (regSet && showWaves) {
 			regY += regDY;
 			if (regY >= kTau)
 				regY -= kTau;
 		}
 	}
-	if (regSet && !_showWaves) {
+	if (regSet && !showWaves) {
 		Common::Array<int> scratch;
 		scratch.resize(w * 2);
 		for (const auto &reg : regSet->getRegions()) {

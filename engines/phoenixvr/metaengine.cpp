@@ -21,6 +21,9 @@
 
 #include "common/savefile.h"
 #include "common/translation.h"
+#include "engines/dialogs.h"
+#include "gui/ThemeEval.h"
+#include "gui/widget.h"
 
 #include "backends/keymapper/action.h"
 #include "backends/keymapper/keymap.h"
@@ -50,6 +53,34 @@ static const ADExtraGuiOptionsMap optionsList[] = {
 	  false,
 	  0,
 	  0}},
+	{GAMEOPTION_DISABLE_DITHERING,
+	 {_s("Disable dithering"),
+	  _s("Faster image loading with less smooth color gradients"),
+	  "phoenixvr_disable_dithering",
+	  false,
+	  0,
+	  0}},
+	{GAMEOPTION_DISABLE_MIPMAPS,
+	 {_s("Disable mipmaps"),
+	  _s("Faster panorama loading, but distant details may shimmer (OpenGL)"),
+	  "phoenixvr_disable_mipmaps",
+	  false,
+	  0,
+	  0}},
+	{GAMEOPTION_DISABLE_ANISOTROPY,
+	 {_s("Disable anisotropic filtering"),
+	  _s("Reduce GPU filtering work at the cost of detail on angled surfaces (OpenGL)"),
+	  "phoenixvr_disable_anisotropy",
+	  false,
+	  0,
+	  0}},
+	{GAMEOPTION_DISABLE_WAVES,
+	 {_s("Disable wave distortion"),
+	  _s("Show the scene without the animated wave distortion effect"),
+	  "phoenixvr_disable_waves",
+	  false,
+	  0,
+	  0}},
 	AD_EXTRA_GUI_OPTIONS_TERMINATOR};
 
 } // End of namespace PhoenixVR
@@ -65,6 +96,32 @@ const ADExtraGuiOptionsMap *PhoenixVRMetaEngine::getAdvancedExtraGuiOptions() co
 Common::Error PhoenixVRMetaEngine::createInstance(OSystem *syst, Engine **engine, const ADGameDescription *desc) const {
 	*engine = new PhoenixVR::PhoenixVREngine(syst, desc);
 	return Common::kNoError;
+}
+
+class PhoenixVROptionsWidget : public GUI::ExtraGuiOptionsWidget {
+public:
+	PhoenixVROptionsWidget(GUI::GuiObject *boss, const Common::String &name, const Common::String &target, const ExtraGuiOptions &options)
+		: GUI::ExtraGuiOptionsWidget(boss, name, target, options), _optionCount(options.size()) {
+		new GUI::StaticTextWidget(widgetsBoss(), _dialogLayout + ".Heading", _("Engine settings"));
+	}
+
+protected:
+	void defineLayout(GUI::ThemeEval &layouts, const Common::String &layoutName, const Common::String &overlayedLayout) const override {
+		layouts.addDialog(layoutName, overlayedLayout);
+		layouts.addLayout(GUI::ThemeLayout::kLayoutVertical).addPadding(0, 0, 0, 0);
+		layouts.addWidget("Heading", "OptionsLabel");
+		for (uint i = 0; i < _optionCount; ++i)
+			layouts.addWidget(Common::String::format("customOption%dCheckbox", i + 1), "Checkbox");
+		layouts.closeLayout().closeDialog();
+	}
+
+private:
+	uint _optionCount;
+};
+
+GUI::OptionsContainerWidget *PhoenixVRMetaEngine::buildEngineOptionsWidget(GUI::GuiObject *boss, const Common::String &name, const Common::String &target) const {
+	const ExtraGuiOptions options = getExtraGuiOptions(target);
+	return options.empty() ? nullptr : new PhoenixVROptionsWidget(boss, name, target, options);
 }
 
 Common::KeymapArray PhoenixVRMetaEngine::initKeymaps(const char *target) const {
@@ -113,10 +170,7 @@ Common::KeymapArray PhoenixVRMetaEngine::initKeymaps(const char *target) const {
 	act->setKeyEvent(Common::KeyState{Common::KEYCODE_ESCAPE});
 	keyMap->addAction(act);
 
-	act = new Common::Action("HINT", _("Show hints"));
-	act->addDefaultInputMapping("h");
-	act->setKeyEvent(Common::KeyState{Common::KEYCODE_h});
-	keyMap->addAction(act);
+	keyMap->addAction(createHotspotAction());
 
 	return Common::Keymap::arrayOf(keyMap);
 }

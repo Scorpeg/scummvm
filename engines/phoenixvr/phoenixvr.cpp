@@ -1509,7 +1509,9 @@ void PhoenixVREngine::renderSprites() {
 }
 
 void PhoenixVREngine::renderVR(float dt) {
-	_vr.render(_renderer, _angleX.angle(), _angleY.angle(), _fov, dt, _showRegions ? _regSet.get() : nullptr);
+	if (!ConfMan.getBool("enable_hotspots"))
+		_showHotspots = false;
+	_vr.render(_renderer, _angleX.angle(), _angleY.angle(), _fov, dt, _showHotspots ? _regSet.get() : nullptr);
 	renderLightEffect();
 	renderLensflare();
 	renderSprites();
@@ -1864,6 +1866,10 @@ void PhoenixVREngine::drawAudioSubtitles() {
 	}
 }
 
+void PhoenixVREngine::showHotspots(bool show) {
+	_showHotspots = show && ConfMan.getBool("enable_hotspots");
+}
+
 Common::Error PhoenixVREngine::run() {
 	_renderer = Renderer::create(version() == 1);
 	_pixelFormat = _renderer->format();
@@ -1959,8 +1965,6 @@ Common::Error PhoenixVREngine::run() {
 		while (g_system->getEventManager()->pollEvent(event)) {
 			switch (event.type) {
 			case Common::EVENT_KEYDOWN: {
-				if (event.kbd.keycode == Common::KeyCode::KEYCODE_h)
-					_showRegions = !_showRegions;
 				if (_prevWarp != -1)
 					break;
 				int code = -1;

@@ -90,6 +90,8 @@ private:
 public:
 	PhoenixVREngine(OSystem *syst, const ADGameDescription *gameDesc);
 	~PhoenixVREngine() override;
+	void showHotspots(bool show) override;
+	void drawHotspots() override {}
 
 	uint32 getFeatures() const;
 
@@ -392,7 +394,6 @@ private:
 	AngleX _angleX;
 	AngleY _angleY;
 	Audio::Mixer *_mixer;
-	bool _showRegions = false;
 
 	static constexpr byte kPaused = 2;
 	static constexpr byte kActive = 4;
