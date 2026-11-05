@@ -30,20 +30,20 @@ struct CubeRequest {
 	size_t sourcePitch;
 	unsigned sourceBpp, sourceWidth, sourceHeight;
 	unsigned width, height;
-	bool version2, ignoreRightPixel, dirty, filter, sourceBgra;
+	bool version2, dirty, filter, sourceBgra;
 	bool mipmaps, anisotropy;
 	float origin[3], stepX[3], stepY[3];
 };
 
 class CubeRenderer {
 	unsigned _uploadProgram, _uploadTexture, _uploadFramebuffer;
-	int _sourceXLocation, _sourceYLocation, _optionsLocation;
+	int _sourceXLocation, _sourceYLocation, _bgraLocation;
 	unsigned _program, _cube, _framebuffer, _output, _vertices;
 	unsigned _width, _height;
 	int _originLocation, _stepXLocation, _stepYLocation;
 	const void *_source;
 	unsigned _sourceBpp;
-	bool _version2, _ignoreRightPixel, _sourceBgra, _failed, _announced;
+	bool _version2, _sourceBgra, _failed, _announced;
 	size_t _sourcePitch;
 	float _view[9];
 	bool _viewValid, _viewFilter;

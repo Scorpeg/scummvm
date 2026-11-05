@@ -49,7 +49,7 @@ static inline void packMipFace(const Request &r, unsigned face, uint8_t *out) {
 		int sx = t[1] * int(y) + t[2];
 		int sy = t[4] * int(y) + t[5];
 		for (unsigned x = 0; x < 512; ++x, sx += t[0], sy += t[3], out += 4) {
-			const unsigned px = sx - (r.ignoreRightPixel && sx >= 256 ? 1 : 0);
+			const unsigned px = sx - (sx >= 256 ? 1 : 0);
 			const unsigned tile = sy < 256 ? px >> 8 : 3 - (px >> 8);
 			const uint8_t *pixel = base + (tile * 256 + (sy & 255)) * r.sourcePitch + (px & 255) * r.sourceBpp;
 			if (r.sourceBpp == 2) {

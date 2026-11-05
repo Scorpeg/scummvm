@@ -65,7 +65,6 @@ class VR {
 	float _hint = 0;
 	bool _showWaves = false;
 	float _wavesT = 0;
-	bool _ignoreRightPixel = false;
 	bool _v2 = false;
 
 public:
@@ -74,7 +73,10 @@ public:
 	bool isVR() const { return _vr; }
 	void playAnimation(const Common::String &name, const Common::String &variable, int value, float speed);
 	void stopAnimation(const Common::String &name);
-	Graphics::Surface &getSurface() { _gpuDirty = true; return *_pic->surfacePtr(); }
+	Graphics::Surface &getSurface() {
+		_gpuDirty = true;
+		return *_pic->surfacePtr();
+	}
 	void showWaves() { _showWaves = true; }
 
 private:

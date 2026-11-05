@@ -432,14 +432,6 @@ VR VR::loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStrea
 			auto *pic = vr._pic.get();
 			if (pic3d) {
 				vr._vr = true;
-
-				// Original engine seems to skip 1 pixel per tile.
-				// dct.dll uses while(x < 255) loop condition when unpacking pixels to color planes.
-				// However, game tiles for all games are matching perfectly with each other.
-				// Those bad pixels are present on right hand side of the right hand tiles.
-				// Minimizing rendering artifacts, reducing face size
-				vr._ignoreRightPixel = true;
-
 				pic->create(kVRImageWidth, kVRImageHeight, format);
 			} else
 				pic->create(kStaticImageWidth, kStaticImageHeight, format);
@@ -700,7 +692,6 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 		request.width = w;
 		request.height = h;
 		request.version2 = _v2;
-		request.ignoreRightPixel = _ignoreRightPixel;
 		request.dirty = _gpuDirty;
 		request.filter = ConfMan.getBool("filtering");
 		request.mipmaps = !ConfMan.hasKey("phoenixvr_disable_mipmaps") || !ConfMan.getBool("phoenixvr_disable_mipmaps");
@@ -742,9 +733,13 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 			regY += kTau;
 	}
 
-	int faceSize = kVRFaceSize;
-	if (_ignoreRightPixel)
-		--faceSize;
+	// Original engine seems to skip 1 pixel per tile.
+	// dct.dll uses while(x < 255) loop condition when unpacking pixels to color planes.
+	// However, game tiles for all games are matching perfectly with each other.
+	// Those bad pixels are present on right hand side of the right hand tiles.
+	// Minimizing rendering artifacts, reducing face size
+
+	int faceSize = kVRFaceSize - 1;
 
 	ColorType *dstPixels = static_cast<ColorType *>(screen->getPixels());
 	const auto dstPixelsPitchIncrement = screen->pitch / sizeof(ColorType);
