@@ -25,6 +25,7 @@
 #include "common/algorithm.h"
 #include "common/bitstream.h"
 #include "common/compression/huffman.h"
+#include "phoenixvr/scene_neon.h"
 #include "video/4xm_utils.h"
 
 namespace PhoenixVR {
@@ -37,13 +38,18 @@ inline uint32 reverseBits(uint32 value, unsigned n) {
 }
 
 inline void idct(int16 *block, bool hasAC) {
-	if (hasAC)
-		Video::FourXM::idct(block, 4);
-	else
+	if (hasAC) {
+#ifdef SCUMMVM_NEON
+		if (SceneNEON::available())
+			SceneNEON::neonIDCT(block, 4);
+		else
+#endif
+			Video::FourXM::idct(block, 4);
+	} else
 		Common::fill(block, block + 64, static_cast<int16>(block[0] >> 4));
 }
 
-}
-}
+} // namespace SceneDecoder
+} // namespace PhoenixVR
 
 #endif

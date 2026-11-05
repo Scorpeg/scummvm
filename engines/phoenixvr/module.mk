@@ -24,6 +24,10 @@ MODULE_OBJS = \
 	vr.o \
 	wise.o
 
+ifdef SCUMMVM_NEON
+MODULE_OBJS += scene_neon.o
+endif
+
 # This module can be built as a plugin
 ifeq ($(ENABLE_PHOENIXVR), DYNAMIC_PLUGIN)
 PLUGIN := 1

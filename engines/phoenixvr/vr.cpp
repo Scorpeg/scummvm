@@ -254,6 +254,35 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 		}
 	};
 
+#ifdef SCUMMVM_NEON
+	if (SceneNEON::available() && !prefix && pic.format.bytesPerPixel == 2 &&
+		((pic.w == kVRImageWidth && pic.h == kVRImageHeight) || (pic.w == kStaticImageWidth && pic.h == kStaticImageHeight))) {
+		Common::Array<int32> band, next;
+		band.resize(pic.w * 8 * 4);
+		next.resize(pic.w * 8 * 4);
+		for (int dstY = 0; dstY < pic.h; dstY += 8) {
+			for (int dstX = 0; dstX < pic.w; dstX += 8) {
+				int16 block[3][64];
+				decodeBlock(block);
+				for (int y = 0; y < 8; ++y) {
+					for (int x = 0; x < 8; ++x) {
+						const int index = y * 8 + x;
+						int32 *dst = band.data() + (y * pic.w + dstX + x) * 4;
+						const int64 luminance = static_cast<int64>(block[0][index] + 128) << 16;
+						dst[0] += CLIP<int64>(luminance + ((block[2][index] << 4) / 10 << 16), -0x1000000, 0xff0000);
+						dst[1] += CLIP<int64>(luminance + ((-block[1][index] / 3 - (block[2][index] * 8) / 10) << 16), -0x1000000, 0xff0000);
+						dst[2] += CLIP<int64>(luminance + (block[1][index] * 2 << 16), -0x1000000, 0xff0000);
+					}
+				}
+			}
+			SceneNEON::ditherBandNEON(band.data(), next.data(), static_cast<uint16 *>(pic.getBasePtr(0, dstY)), pic.w, pic.pitch / 2);
+			band.swap(next);
+			Common::fill(next.begin(), next.end(), 0);
+		}
+		return;
+	}
+#endif
+
 	if (!prefix && pic.format.bytesPerPixel == 2 &&
 		((pic.w == kVRImageWidth && pic.h == kVRImageHeight) || (pic.w == kStaticImageWidth && pic.h == kStaticImageHeight))) {
 		const int bandSize = pic.w * 8;
@@ -393,15 +422,12 @@ VR VR::loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStrea
 			if (pic3d) {
 				vr._vr = true;
 
-				if (g_engine->gameIdMatches("dracula2") || g_engine->gameIdMatches("amerzone")) {
-					// Original engine seems to skip 1 pixel per tile.
-					// dct.dll uses while(x < 255) loop condition when unpacking pixels to color planes.
-					// However, game tiles for all games are matching perfectly with each other.
-					// Those bad pixels are present on right hand side of the right hand tiles
-					// only found in Dracula 2.
-					// Minimizing rendering artifacts, reducing face size
-					vr._ignoreRightPixel = true;
-				}
+				// Original engine seems to skip 1 pixel per tile.
+				// dct.dll uses while(x < 255) loop condition when unpacking pixels to color planes.
+				// However, game tiles for all games are matching perfectly with each other.
+				// Those bad pixels are present on right hand side of the right hand tiles.
+				// Minimizing rendering artifacts, reducing face size
+				vr._ignoreRightPixel = true;
 
 				pic->create(kVRImageWidth, kVRImageHeight, format);
 			} else
