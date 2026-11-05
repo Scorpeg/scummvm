@@ -46,6 +46,7 @@ public:
 	SaveStateDescriptor querySaveMetaInfos(const char *target, int slot) const override;
 
 	const ADExtraGuiOptionsMap *getAdvancedExtraGuiOptions() const override;
+	GUI::OptionsContainerWidget *buildEngineOptionsWidget(GUI::GuiObject *boss, const Common::String &name, const Common::String &target) const override;
 	Common::KeymapArray initKeymaps(const char *target) const override;
 };
 

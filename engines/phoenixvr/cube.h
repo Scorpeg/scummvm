@@ -31,6 +31,7 @@ struct CubeRequest {
 	unsigned sourceBpp, sourceWidth, sourceHeight;
 	unsigned width, height;
 	bool version2, ignoreRightPixel, dirty, filter, sourceBgra;
+	bool mipmaps, anisotropy;
 	float origin[3], stepX[3], stepY[3];
 };
 
@@ -47,6 +48,7 @@ class CubeRenderer {
 	float _view[9];
 	bool _viewValid, _viewFilter;
 	bool _mipmapsValid, _filterValid, _filterLinear;
+	bool _filterMipmaps, _filterAnisotropy;
 	bool configureFiltering(const CubeRequest &request);
 	void release();
 	bool initialize();

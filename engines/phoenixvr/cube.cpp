@@ -119,7 +119,7 @@ CubeRenderer::CubeRenderer() : _uploadProgram(0), _uploadTexture(0), _uploadFram
 							   _originLocation(-1), _stepXLocation(-1), _stepYLocation(-1), _source(nullptr),
 							   _sourceBpp(0), _version2(false), _ignoreRightPixel(false), _sourceBgra(false), _failed(false), _announced(false), _sourcePitch(0),
 							   _viewValid(false), _viewFilter(false),
-							   _mipmapsValid(false), _filterValid(false), _filterLinear(false) {}
+							   _mipmapsValid(false), _filterValid(false), _filterLinear(false), _filterMipmaps(false), _filterAnisotropy(false) {}
 
 CubeRenderer::~CubeRenderer() {
 	release();
@@ -317,11 +317,11 @@ bool CubeRenderer::resize(unsigned width, unsigned height) {
 }
 
 bool CubeRenderer::configureFiltering(const CubeRequest &r) {
-	if (_filterValid && _filterLinear == r.filter)
+	if (_filterValid && _filterLinear == r.filter && _filterMipmaps == r.mipmaps && _filterAnisotropy == r.anisotropy)
 		return true;
 	GLint minLinear = GL_LINEAR;
 	if (r.filter) {
-		if (glad_glGenerateMipmap) {
+		if (r.mipmaps && glad_glGenerateMipmap) {
 			if (!_mipmapsValid) {
 #ifdef SCUMMVM_NEON
 				const bool neon = SceneNEON::available() && generateCubeMipmapsNEON(r);
@@ -339,7 +339,7 @@ bool CubeRenderer::configureFiltering(const CubeRequest &r) {
 	}
 	if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) {
 		GLfloat anisotropy = 1.0f;
-		if (r.filter) {
+		if (r.filter && r.anisotropy) {
 			glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &anisotropy);
 		}
 		glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_ANISOTROPY_EXT, anisotropy);
@@ -349,6 +349,8 @@ bool CubeRenderer::configureFiltering(const CubeRequest &r) {
 	if (glGetError() != GL_NO_ERROR)
 		return false;
 	_filterLinear = r.filter;
+	_filterMipmaps = r.mipmaps;
+	_filterAnisotropy = r.anisotropy;
 	_filterValid = true;
 	return true;
 }
@@ -367,7 +369,7 @@ bool CubeRenderer::render(const CubeRequest &r, unsigned targetFramebuffer) {
 	memcpy(view + 3, r.stepX, sizeof(r.stepX));
 	memcpy(view + 6, r.stepY, sizeof(r.stepY));
 	if (!targetFramebuffer && _viewValid && !uploadNeeded && _width == r.width && _height == r.height &&
-		_viewFilter == r.filter && !memcmp(view, _view, sizeof(view))) {
+		_viewFilter == r.filter && _filterMipmaps == r.mipmaps && _filterAnisotropy == r.anisotropy && !memcmp(view, _view, sizeof(view))) {
 		return true;
 	}
 	_viewValid = false;
