@@ -481,6 +481,35 @@ VR VR::loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStrea
 	return vr;
 }
 
+void VR::dumpTexture(Common::SeekableWriteStream &out) {
+	if (isVR()) {
+		Common::ScopedPtr<Graphics::ManagedSurface> pic(new Graphics::ManagedSurface);
+		assert(_pic && _pic->w == kVRImageWidth && _pic->h == kVRImageHeight);
+		pic->create(kVRFaceSize, kVRFaceSize * kVRCubeFaceCount, _pic->format);
+		Common::Rect srcRect(0, 0, kVRTileSize, kVRTileSize);
+		int dstY = 0;
+		for (int f = 0; f != kVRCubeFaceCount; ++f) {
+			pic->copyRectToSurface(*_pic, 0, dstY, srcRect);
+			srcRect.translate(0, kVRTileSize);
+
+			pic->copyRectToSurface(*_pic, kVRTileSize, dstY, srcRect);
+			srcRect.translate(0, kVRTileSize);
+
+			dstY += kVRTileSize;
+
+			pic->copyRectToSurface(*_pic, kVRTileSize, dstY, srcRect);
+			srcRect.translate(0, kVRTileSize);
+
+			pic->copyRectToSurface(*_pic, 0, dstY, srcRect);
+			srcRect.translate(0, kVRTileSize);
+
+			dstY += kVRTileSize;
+		}
+		Image::writeBMP(out, *pic);
+	} else
+		Image::writeBMP(out, *_pic);
+}
+
 namespace {
 
 struct Cube {

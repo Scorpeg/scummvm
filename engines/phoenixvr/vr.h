@@ -79,6 +79,8 @@ public:
 	}
 	void showWaves() { _showWaves = true; }
 
+	void dumpTexture(Common::SeekableWriteStream &out);
+
 private:
 	template<typename ColorType>
 	void renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, RegionSet *regSet);
