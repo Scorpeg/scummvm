@@ -24,6 +24,7 @@
 #include "common/bitstream.h"
 #include "common/config-manager.h"
 #include "common/debug.h"
+#include "common/file.h"
 #include "common/system.h"
 #include "common/textconsole.h"
 #include "graphics/screen.h"
@@ -399,6 +400,117 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 		}
 	}
 }
+
+void fixRightBottomPixels(Graphics::ManagedSurface &pic, bool v2) {
+
+	/*
+	Cubemap faces orientation.
+	v1:
+		0: Bottom (front-right-left-back is relative to the bottom face position)
+		1: Left
+		2: Top
+		3: Right
+		4: Front
+		5: Back
+
+	v2:
+		0: Front
+		1: Left
+		2: Right
+		3: Back
+		4: Top
+		5: Bottom
+
+		Edges of the face are numbered as 0 top, 1 right, 2 bottom, 3 left
+	*/
+	enum struct Face : uint8 { kBottom,
+							   kLeft,
+							   kTop,
+							   kRight,
+							   kFront,
+							   kBack };
+	enum struct FaceEdge : uint8 { kTop = 0,
+								   kRight = 1,
+								   kBottom = 2,
+								   kLeft = 3 };
+	auto getFaceId = [&](Face face) {
+		if (v2) {
+			switch (face) {
+			case Face::kBottom:
+				return 5;
+			case Face::kLeft:
+				return 2;
+			case Face::kTop:
+				return 4;
+			case Face::kRight:
+				return 1;
+			case Face::kFront:
+				return 0;
+			case Face::kBack:
+				return 3;
+			default:
+				return 0;
+			}
+		}
+		return static_cast<int>(face);
+	};
+	auto getTileBase = [&](Face face) {
+		auto faceIdx = getFaceId(face);
+		return faceIdx * kVRTilesPerFace;
+	};
+	auto getSrcTile = [](FaceEdge edge, int idx) {
+		switch (edge) {
+		case FaceEdge::kTop:
+			return idx == 0 ? 0 : 1;
+		case FaceEdge::kRight:
+			return idx == 0 ? 1 : 2;
+		case FaceEdge::kBottom:
+			return idx == 0 ? 3 : 2;
+		case FaceEdge::kLeft:
+			return idx == 0 ? 0 : 3;
+		default:
+			error("invalid edge");
+		}
+	};
+	auto edgeTexel = [&](Face f, FaceEdge e, int i) -> const uint8 * {
+		i = MIN(i, 510); // index 511 is the corner padding
+		int tile = getTileBase(f) + getSrcTile(e, i / 256), pos = i % 256, y = tile * kVRTileSize;
+		switch (e) {
+		case FaceEdge::kTop:
+			return static_cast<const uint8 *>(pic.getBasePtr(pos, y));
+		case FaceEdge::kRight:
+			return static_cast<const uint8 *>(pic.getBasePtr(254, y + pos));
+		case FaceEdge::kBottom:
+			return static_cast<const uint8 *>(pic.getBasePtr(pos, y + 254));
+		default:
+			return static_cast<const uint8 *>(pic.getBasePtr(0, y + pos)); // kLeft
+		}
+	};
+	auto copyEdge = [&](Face dst, bool right, Face src, FaceEdge edge, bool reverse) {
+		static const int rightTiles[2] = {1, 2}, bottomTiles[2] = {3, 2};
+		const int bpp = pic.format.bytesPerPixel;
+		for (int n = 0; n < 2; ++n)
+			for (int k = 0; k < kVRTileSize; ++k) {
+				int j = n * 256 + k;
+				int tile = getTileBase(dst) + (right ? rightTiles[n] : bottomTiles[n]);
+				uint8 *d = static_cast<uint8 *>(right ? pic.getBasePtr(255, tile * kVRTileSize + k)
+													  : pic.getBasePtr(k, tile * kVRTileSize + 255));
+				memcpy(d, edgeTexel(src, edge, reverse ? 511 - j : j), bpp);
+			}
+	};
+	copyEdge(Face::kBottom, true, Face::kRight, FaceEdge::kBottom, false);
+	copyEdge(Face::kBottom, false, Face::kBack, FaceEdge::kBottom, true);
+	copyEdge(Face::kLeft, true, Face::kFront, FaceEdge::kLeft, false);
+	copyEdge(Face::kLeft, false, Face::kBottom, FaceEdge::kLeft, true);
+	copyEdge(Face::kTop, true, Face::kRight, FaceEdge::kTop, true);
+	copyEdge(Face::kTop, false, Face::kFront, FaceEdge::kTop, false);
+	copyEdge(Face::kRight, true, Face::kBack, FaceEdge::kLeft, false);
+	copyEdge(Face::kRight, false, Face::kBottom, FaceEdge::kRight, false);
+	copyEdge(Face::kFront, true, Face::kRight, FaceEdge::kLeft, false);
+	copyEdge(Face::kFront, false, Face::kBottom, FaceEdge::kTop, false);
+	copyEdge(Face::kBack, true, Face::kLeft, FaceEdge::kLeft, false);
+	copyEdge(Face::kBack, false, Face::kBottom, FaceEdge::kBottom, true);
+}
 } // namespace
 
 VR VR::loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStream &s) {
@@ -442,6 +554,14 @@ VR VR::loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStrea
 			auto *dcPtr = acPtr + 4 + dcOffset;
 			auto *dcEnd = vrData.data() + vrData.size();
 			unpack(*pic->surfacePtr(), huff, huffSize, acPtr, dcPtr - acPtr, dcPtr, dcEnd - dcPtr, quality);
+			if (pic3d) {
+				fixRightBottomPixels(*pic, vr._v2);
+			}
+#if 0
+			Common::DumpFile f;
+			if (f.open("vr.bmp"))
+				vr.dumpTexture(f);
+#endif
 		} else if (chunkId == CHUNK_ANIMATION || chunkId == V2_CHUNK_ANIMATION) {
 			Animation animation;
 			animation.name = s.readString(0, 32);
@@ -762,14 +882,6 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 			regY += kTau;
 	}
 
-	// Original engine seems to skip 1 pixel per tile.
-	// dct.dll uses while(x < 255) loop condition when unpacking pixels to color planes.
-	// However, game tiles for all games are matching perfectly with each other.
-	// Those bad pixels are present on right hand side of the right hand tiles.
-	// Minimizing rendering artifacts, reducing face size
-
-	int faceSize = kVRFaceSize - 1;
-
 	ColorType *dstPixels = static_cast<ColorType *>(screen->getPixels());
 	const auto dstPixelsPitchIncrement = screen->pitch / sizeof(ColorType);
 	for (int dstY = 0; dstY != h; ++dstY, line += incrementY, dstPixels += dstPixelsPitchIncrement) {
@@ -793,7 +905,7 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 
 		for (int dstX = 0; dstX != w; ++dstX, ray += incrementX, ++dst) {
 			auto cube = toCube(ray.x(), ray.y(), ray.z(), _v2);
-			int srcX = static_cast<int>(faceSize * cube.x);
+			int srcX = static_cast<int>(kVRFaceSize * cube.x);
 			int srcY = static_cast<int>(kVRFaceSize * cube.y);
 			int tileId = cube.faceIdx << 2;
 			tileId += (srcY < kVRTileSize) ? (srcX < kVRTileSize ? 0 : 1) : (srcX < kVRTileSize ? 3 : 2);

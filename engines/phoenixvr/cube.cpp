@@ -203,7 +203,6 @@ bool CubeRenderer::initialize() {
 		"void main() {\n"
 		" vec3 pixel = vec3(floor(gl_FragCoord.xy), 1.0);\n"
 		" vec2 p = vec2(dot(pixel, sourceX), dot(pixel, sourceY));\n"
-		" p.x -= step(256.0, p.x);\n"
 		" vec2 quadrant = step(vec2(256.0), p);\n"
 		" float tile = mix(quadrant.x, 3.0 - quadrant.x, quadrant.y);\n"
 		" vec2 uv = (mod(p, 256.0) + vec2(0.5, tile * 256.0 + 0.5)) / vec2(256.0, 1024.0);\n"
