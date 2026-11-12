@@ -73,26 +73,56 @@ constexpr int kVRFaceSize = kVRTileSize * 2;
 constexpr int kVRImageWidth = kVRTileSize;
 constexpr int kVRImageHeight = kVRTileSize * kVRTilesPerFace * kVRCubeFaceCount;
 
-template<typename T>
-T clip(T a) {
-	return a >= 0 ? a <= 255 ? a : 255 : 0;
+template<typename ComponentType>
+struct YCbCr {
+	ComponentType y, cb, cr;
+};
+
+template<typename ComponentType>
+struct RGB {
+	ComponentType r, g, b;
+
+	template<typename YC>
+	static RGB fromYCbCr(YCbCr<YC> y) {
+		auto y0 = y.y + 128;
+		return {
+			static_cast<ComponentType>(y0 + (y.cr * 16) / 10),
+			static_cast<ComponentType>(y0 - y.cb / 3 - (y.cr * 8) / 10),
+			static_cast<ComponentType>(y0 + y.cb * 2)};
+	}
+
+	RGB clipped(ComponentType min, ComponentType max) const {
+		return {
+			CLIP(r, min, max),
+			CLIP(g, min, max),
+			CLIP(b, min, max)};
+	}
+
+	RGB multiplied(ComponentType m) const {
+		return {r * m, g * m, b * m};
+	}
+
+	uint32 toColor(const Graphics::PixelFormat &format) const {
+		return format.RGBToColor(r, g, b);
+	}
+};
+
+uint32 YCbCr2RGB(const Graphics::PixelFormat &format, YCbCr<int16> y) {
+	return RGB<int16>::fromYCbCr(y).clipped(0, 255).toColor(format);
 }
 
-uint32 YCbCr2RGB(const Graphics::PixelFormat &format, int16 y, int16 cb, int16 cr) {
-	int r = clip(y + (cr * 16) / 10);
-	int g = clip(y - cb / 3 - (cr * 8) / 10);
-	int b = clip(y + cb * 2);
-
-	return format.RGBToColor(r, g, b);
+// YCbCr converted to RGB F16.16
+RGB<int32> YCbCrToF16(YCbCr<int16> y) {
+	return RGB<int32>::fromYCbCr(y).multiplied(65536);
 }
 
 void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64]) {
 	int32 r[64], g[64], b[64];
 	for (int i = 0; i < 64; ++i) {
-		const auto yFixed = static_cast<int32>(block[0][i] + 128) * 65536;
-		r[i] = yFixed + ((block[2][i] * 16) / 10 * 65536);
-		g[i] = yFixed + ((-block[1][i] / 3 - (block[2][i] * 8) / 10) * 65536);
-		b[i] = yFixed + (block[1][i] * 2 * 65536);
+		auto color = YCbCrToF16({block[0][i], block[1][i], block[2][i]});
+		r[i] = color.r;
+		g[i] = color.g;
+		b[i] = color.b;
 	}
 
 	const int dstPitch = pic.pitch / pic.format.bytesPerPixel;
@@ -108,9 +138,9 @@ void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 bl
 
 			dstPixels[y * dstPitch + x] = ((r[index] >> 8) & 0xf800) | ((g[index] >> 13) & 0x07e0) | ((b[index] >> 19) & 0x001f);
 
-			const int32 redError = r[index] - (r[index] & 0xfff80000);
-			const int32 greenError = g[index] - (g[index] & 0xfffc0000);
-			const int32 blueError = b[index] - (b[index] & 0xfff80000);
+			const auto redError = static_cast<int32>(r[index] - (r[index] & 0xfff80000));
+			const auto greenError = static_cast<int32>(g[index] - (g[index] & 0xfffc0000));
+			const auto blueError = static_cast<int32>(b[index] - (b[index] & 0xfff80000));
 
 			auto spread = [&](int dstIndex, int weight) {
 				r[dstIndex] += (redError * weight) >> 4;
@@ -270,10 +300,10 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					for (int x = 0; x < 8; ++x) {
 						const int index = y * 8 + x;
 						int32 *dst = band.data() + (y * pic.w + dstX + x) * 4;
-						const auto luminance = static_cast<int32>(block[0][index] + 128) * 65536;
-						dst[0] += CLIP<int32>(luminance + ((block[2][index] * 16) / 10 * 65536), -0x1000000, 0xff0000);
-						dst[1] += CLIP<int32>(luminance + ((-block[1][index] / 3 - (block[2][index] * 8) / 10) * 65536), -0x1000000, 0xff0000);
-						dst[2] += CLIP<int32>(luminance + (block[1][index] * 2 * 65536), -0x1000000, 0xff0000);
+						auto rgb = YCbCrToF16({block[0][index], block[1][index], block[2][index]}).clipped(-0x1000000, 0xff0000);
+						dst[0] += rgb.r;
+						dst[1] += rgb.g;
+						dst[2] += rgb.b;
 					}
 				}
 			}
@@ -299,10 +329,10 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					for (int x = 0; x < 8; ++x) {
 						const int src = y * 8 + x;
 						const int dst = y * pic.w + dstX + x;
-						const auto yFixed = static_cast<int32>(block[0][src] + 128) * 65536;
-						red[dst] += yFixed + ((block[2][src] * 16) / 10 * 65536);
-						green[dst] += yFixed + ((-block[1][src] / 3 - (block[2][src] * 8) / 10) * 65536);
-						blue[dst] += yFixed + (block[1][src] * 2 * 65536);
+						auto rgb = YCbCrToF16({block[0][src], block[1][src], block[2][src]});
+						red[dst] += rgb.r;
+						green[dst] += rgb.g;
+						blue[dst] += rgb.b;
 					}
 				}
 			}
@@ -376,7 +406,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					int16 cb = block[1][srcIdx];
 					int16 cr = block[2][srcIdx];
 
-					*dstPixel++ = YCbCr2RGB(pic.format, y + 128, cb, cr);
+					*dstPixel++ = YCbCr2RGB(pic.format, {y, cb, cr});
 				}
 			}
 		} break;
@@ -388,7 +418,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					uint16 *dst = static_cast<uint16 *>(pic.getBasePtr(dstX, dstY + y));
 					for (unsigned x = 0; x < 8; ++x) {
 						const unsigned i = y * 8 + x;
-						dst[x] = YCbCr2RGB(pic.format, block[0][i] + 128, block[1][i], block[2][i]);
+						dst[x] = YCbCr2RGB(pic.format, {block[0][i], block[1][i], block[2][i]});
 					}
 				}
 			}
