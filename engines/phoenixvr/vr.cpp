@@ -79,7 +79,7 @@ T clip(T a) {
 }
 
 uint32 YCbCr2RGB(const Graphics::PixelFormat &format, int16 y, int16 cb, int16 cr) {
-	int r = clip(y + (cr << 4) / 10);
+	int r = clip(y + (cr * 16) / 10);
 	int g = clip(y - cb / 3 - (cr * 8) / 10);
 	int b = clip(y + cb * 2);
 
@@ -89,10 +89,10 @@ uint32 YCbCr2RGB(const Graphics::PixelFormat &format, int16 y, int16 cb, int16 c
 void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64]) {
 	int32 r[64], g[64], b[64];
 	for (int i = 0; i < 64; ++i) {
-		const auto yFixed = static_cast<int32>(block[0][i] + 128) << 16;
-		r[i] = yFixed + ((block[2][i] << 4) / 10 << 16);
-		g[i] = yFixed + ((-block[1][i] / 3 - (block[2][i] * 8) / 10) << 16);
-		b[i] = yFixed + (block[1][i] * 2 << 16);
+		const auto yFixed = static_cast<int32>(block[0][i] + 128) * 65536;
+		r[i] = yFixed + ((block[2][i] * 16) / 10 * 65536);
+		g[i] = yFixed + ((-block[1][i] / 3 - (block[2][i] * 8) / 10) * 65536);
+		b[i] = yFixed + (block[1][i] * 2 * 65536);
 	}
 
 	const int dstPitch = pic.pitch / pic.format.bytesPerPixel;
@@ -270,10 +270,10 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					for (int x = 0; x < 8; ++x) {
 						const int index = y * 8 + x;
 						int32 *dst = band.data() + (y * pic.w + dstX + x) * 4;
-						const auto luminance = static_cast<int32>(block[0][index] + 128) << 16;
-						dst[0] += CLIP<int32>(luminance + ((block[2][index] << 4) / 10 << 16), -0x1000000, 0xff0000);
-						dst[1] += CLIP<int32>(luminance + ((-block[1][index] / 3 - (block[2][index] * 8) / 10) << 16), -0x1000000, 0xff0000);
-						dst[2] += CLIP<int32>(luminance + (block[1][index] * 2 << 16), -0x1000000, 0xff0000);
+						const auto luminance = static_cast<int32>(block[0][index] + 128) * 65536;
+						dst[0] += CLIP<int32>(luminance + ((block[2][index] * 16) / 10 * 65536), -0x1000000, 0xff0000);
+						dst[1] += CLIP<int32>(luminance + ((-block[1][index] / 3 - (block[2][index] * 8) / 10) * 65536), -0x1000000, 0xff0000);
+						dst[2] += CLIP<int32>(luminance + (block[1][index] * 2 * 65536), -0x1000000, 0xff0000);
 					}
 				}
 			}
@@ -287,7 +287,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 
 	if (dither && !prefix && pic.format.bytesPerPixel == 2 &&
 		((pic.w == kVRImageWidth && pic.h == kVRImageHeight) || (pic.w == kStaticImageWidth && pic.h == kStaticImageHeight))) {
-		const int bandSize = pic.w * 8;
+		const uint bandSize = pic.w * 8;
 		Common::Array<int32> red(bandSize), green(bandSize), blue(bandSize),
 			nextRed(bandSize), nextGreen(bandSize), nextBlue(bandSize);
 
@@ -299,32 +299,33 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					for (int x = 0; x < 8; ++x) {
 						const int src = y * 8 + x;
 						const int dst = y * pic.w + dstX + x;
-						const auto yFixed = static_cast<int32>(block[0][src] + 128) << 16;
-						red[dst] += yFixed + ((block[2][src] << 4) / 10 << 16);
-						green[dst] += yFixed + ((-block[1][src] / 3 - (block[2][src] * 8) / 10) << 16);
-						blue[dst] += yFixed + (block[1][src] * 2 << 16);
+						const auto yFixed = static_cast<int32>(block[0][src] + 128) * 65536;
+						red[dst] += yFixed + ((block[2][src] * 16) / 10 * 65536);
+						green[dst] += yFixed + ((-block[1][src] / 3 - (block[2][src] * 8) / 10) * 65536);
+						blue[dst] += yFixed + (block[1][src] * 2 * 65536);
 					}
 				}
 			}
 
+			uint index = 0;
 			for (int y = 0; y < 8; ++y) {
 				uint16 *dstPixels = static_cast<uint16 *>(pic.getBasePtr(0, dstY + y));
-				for (int x = 0; x < pic.w; ++x) {
-					const int index = y * pic.w + x;
+				for (int x = 0; x < pic.w; ++x, ++index) {
 					red[index] = CLIP<int32>(red[index], 0, 0xff0000);
 					green[index] = CLIP<int32>(green[index], 0, 0xff0000);
 					blue[index] = CLIP<int32>(blue[index], 0, 0xff0000);
 
 					dstPixels[x] = ((red[index] >> 8) & 0xf800) | ((green[index] >> 13) & 0x07e0) | ((blue[index] >> 19) & 0x001f);
-					if (x == pic.w - 1)
-						continue;
 
 					const int32 redError = (red[index] - (red[index] & 0xf80000)) >> 1;
 					const int32 greenError = (green[index] - (green[index] & 0xfc0000)) >> 1;
 					const int32 blueError = (blue[index] - (blue[index] & 0xf80000)) >> 1;
-					red[index + 1] += redError;
-					green[index + 1] += greenError;
-					blue[index + 1] += blueError;
+					const auto next = index + 1;
+					if (next < bandSize) {
+						red[next] += redError;
+						green[next] += greenError;
+						blue[next] += blueError;
+					}
 
 					if (y == 7) {
 						nextRed[x] += redError;
