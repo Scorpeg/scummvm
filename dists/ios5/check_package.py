@@ -26,6 +26,20 @@ with tempfile.TemporaryDirectory() as temp:
     for name in ['ScummVM', 'icon.png', 'icon-72.png', 'scummmodern.zip', 'fonts.dat', 'ios-help.zip']:
         assert (app/name).is_file(), name
     assert (stage/'usr/bin/scummvm-ios5-runtime-probe').is_file()
+    updater_config = stage/'etc/scummvm-ios5-updater'
+    if updater_config.exists():
+        helper = stage/'usr/libexec/scummvm-ios5-update'
+        assert helper.is_file() and helper.stat().st_mode & 0o7777 == 0o4755
+        assert (updater_config/'feed.url').read_text().startswith('https://')
+        public_key = (updater_config/'public.pem').read_bytes()
+        assert b'PRIVATE KEY' not in public_key
+        subprocess.run(['openssl', 'rsa', '-pubin', '-noout'], input=public_key, check=True)
+        with tempfile.TemporaryFile() as data_archive:
+            subprocess.run(['dpkg-deb', '--fsys-tarfile', str(package)], stdout=data_archive, check=True)
+            data_archive.seek(0)
+            with tarfile.open(fileobj=data_archive) as data:
+                entry = data.getmember('./usr/libexec/scummvm-ios5-update')
+                assert entry.uid == 0 and entry.gid == 0 and entry.mode == 0o4755
     assert not (stage/'var').exists(), 'Package must not own user data'
     subprocess.run(['dpkg-deb', '-e', str(package), str(stage/'control')], check=True)
     for name in ['postinst', 'postrm']:

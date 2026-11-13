@@ -7537,7 +7537,10 @@ echo "$_bink"
 # Check whether to build updates support
 #
 echo_n "Building updates support... "
-if test "$_updates" = yes; then
+if test "$_backend" = ios5; then
+	_updates=yes
+	echo "iOS5"
+elif test "$_updates" = yes; then
 	if test "$_sparkle" = yes; then
 		echo "Sparkle"
 	else
