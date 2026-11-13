@@ -16,7 +16,7 @@ config=(build/'config.mk').read_text()
 header=(build/'config.h').read_text()
 engine_definitions={name.upper() for p in (root/'engines').glob('*/configure.engine') for name in re.findall(r'^add_engine\s+(\w+)',p.read_text(),re.M)}
 enabled=set(re.findall(r'^ENABLE_(\w+)\s*=\s*(?:STATIC_PLUGIN|1)\s*$',config,re.M))
-unsupported={'MACS2':'Requires ImGui integration unavailable in the iOS backend', 'WATCHMAKER':'Requires desktop OpenGL classic, unavailable with the iOS GLES backend'}
+unsupported={'WATCHMAKER':'Requires desktop OpenGL classic, unavailable with the iOS GLES backend'}
 missing=engine_definitions-enabled
 assert missing==set(unsupported), 'Unexpected disabled engines: '+repr(sorted(missing))
 plugins=set(re.findall(r'LINK_PLUGIN\((\w+)\)',(build/'engines/plugins_table.h').read_text())) & enabled
