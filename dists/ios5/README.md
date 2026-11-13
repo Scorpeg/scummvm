@@ -19,3 +19,5 @@ Install the `.deb` using `dpkg -i`. The package uses gzip archives and a SHA1 ja
 The display name is ScummVM; the app lives at `/Applications/ScummVM-iOS5.app` with bundle/package identifier `org.scummvm.ios5`. Settings and saves live in `/var/mobile/Library/ScummVM.iOS5`, games default to `/var/mobile/ScummVM`, and the rotating log is `/var/mobile/.scummvm-ios5.log`. The package does not own or remove user data.
 
 The package includes `/usr/bin/scummvm-ios5-runtime-probe`. Run it as `mobile` to check the C++ runtime, threads, FluidSynth, TLS entropy, certificates and compression libraries on the actual device. Host compilation and the SDK import audit do not establish device compatibility. Launch, rendering, audio and memory pressure still require a physical iPad test.
+
+For in-app updates, package with `IOS5_UPDATE_URL` (HTTPS feed directory) and `IOS5_UPDATE_PUBLIC_KEY` (PEM public key matching the Buildbot signer). Install that first package manually, then use **Global Options / Misc / Check now** from the launcher. Installation closes the app; reopen it after completion. The installer log is `/var/lib/scummvm-ios5-updater/last-install.log`.

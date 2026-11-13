@@ -1,6 +1,10 @@
 #!/bin/sh
 case "${1:-}" in
     configure)
+        if [ -f /usr/libexec/scummvm-ios5-update ]; then
+            chown root:wheel /usr/libexec/scummvm-ios5-update || exit 1
+            chmod 4755 /usr/libexec/scummvm-ios5-update || exit 1
+        fi
         if command -v uicache >/dev/null 2>&1; then
             if command -v su >/dev/null 2>&1 && su mobile -c uicache; then
                 exit 0
