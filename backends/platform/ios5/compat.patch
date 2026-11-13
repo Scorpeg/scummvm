@@ -1030,7 +1030,7 @@ diff --git a/backends/platform/ios7/ios7_osys_events.cpp b/backends/platform/ios
 diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/ios7_osys_main.cpp
 --- a/backends/platform/ios7/ios7_osys_main.cpp
 +++ b/backends/platform/ios7/ios7_osys_main.cpp
-@@ -33,16 +33,19 @@
+@@ -33,16 +33,20 @@
  #include "common/scummsys.h"
  #include "common/util.h"
  #include "common/rect.h"
@@ -1041,6 +1041,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  #include "common/formats/ini-file.h"
 +#ifdef IPHONE_IOS5
 +#include "backends/platform/ios5/metrics.h"
++#include "backends/platform/ios5/updates.h"
 +#endif
  
  #include "base/main.h"
@@ -1050,7 +1051,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  
  #include "graphics/cursorman.h"
  #include "gui/gui-manager.h"
-@@ -83,36 +86,43 @@
+@@ -83,36 +87,43 @@
  			return Common::kWritePermissionDenied;
  		if (errno == ENOENT)
  			return Common::kPathDoesNotExist;
@@ -1097,7 +1098,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  
  	if (!OpenGLContext.framebufferObjectMultisampleSupported) {
  		return levels;
-@@ -149,16 +159,40 @@
+@@ -149,16 +160,41 @@
  
  int OSystem_iOS7::timerHandler(int t) {
  	DefaultTimerManager *tm = (DefaultTimerManager *)g_system->getTimerManager();
@@ -1106,6 +1107,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  }
  
  void OSystem_iOS7::initBackend() {
++	_updateManager = createIOS5UpdateManager();
 +#ifdef IPHONE_IOS5
 +	_perfThread = pthread_self();
 +	IOS5Metrics::startFrameTrace();
@@ -1138,7 +1140,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  
  	_startTime = CACurrentMediaTime();
  
-@@ -320,18 +354,27 @@
+@@ -320,18 +356,27 @@
  
  uint32 OSystem_iOS7::getMillis(bool skipRecord) {
  	CFTimeInterval timeInSeconds = CACurrentMediaTime();
@@ -1166,7 +1168,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  	case 1:
  		return 0.5;
  	case 2:
-@@ -348,32 +391,46 @@
+@@ -348,32 +393,46 @@
  		return 2.0;
  	default:
  		return 1.0;
@@ -1222,7 +1224,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  	td.tm_sec = t.tm_sec;
  	td.tm_min = t.tm_min;
  	td.tm_hour = t.tm_hour;
-@@ -441,16 +498,17 @@
+@@ -441,16 +500,17 @@
  	}
  	return sys->getCurrentTouchMode();
  }
@@ -1240,7 +1242,7 @@ diff --git a/backends/platform/ios7/ios7_osys_main.cpp b/backends/platform/ios7/
  		// This happens only upon app launch
  		// NOTE: We don't check for file size each time we write a log message.
  		long sz = ftell(logFile);
-@@ -468,23 +526,27 @@
+@@ -468,23 +528,27 @@
  			fclose(stderr);
  			*stdout = *logFile;
  			*stderr = *logFile;
@@ -2536,3 +2538,35 @@ diff --git a/graphics/opengl/texture.h b/graphics/opengl/texture.h
  		return Graphics::PixelFormat::createFormatRGBA32();
  	}
  
+diff --git a/gui/options.cpp b/gui/options.cpp
+--- a/gui/options.cpp
++++ b/gui/options.cpp
+@@ -2776,23 +2776,28 @@
+ 
+ 	// TODO: joystick setting
+ 
+ #ifdef USE_UPDATES
+ 	if (g_system->getUpdateManager()) {
+ 		_updatesPopUpDesc = new StaticTextWidget(boss, prefix + "UpdatesPopupDesc", _("Update check:"), _("How often to check ScummVM updates"));
+ 		_updatesPopUp = new PopUpWidget(boss, prefix + "UpdatesPopup");
+ 
++#ifdef IPHONE_IOS5
++		_updatesPopUp->appendEntry(_("Never"), 0);
++		_updatesPopUp->setEnabled(false);
++#else
+ 		const int *vals = Common::UpdateManager::getUpdateIntervals();
+ 		while (*vals != -1) {
+ 			_updatesPopUp->appendEntry(Common::UpdateManager::updateIntervalToString(*vals), *vals);
+ 			vals++;
+ 		}
+ 
+ 		_updatesPopUp->setSelectedTag(Common::UpdateManager::normalizeInterval(ConfMan.getInt("updates_check")));
++#endif
+ 
+ 		new ButtonWidget(boss, prefix + "UpdatesCheckManuallyButton", _("Check now"), Common::U32String(), kUpdatesCheckCmd);
+ 	}
+ #endif // USE_UPDATES
+ }
+ 
+ #ifdef USE_CLOUD
+ void GlobalOptionsDialog::addCloudControls(GuiObject *boss, const Common::String &prefix, bool lowres) {

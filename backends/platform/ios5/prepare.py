@@ -18,7 +18,7 @@ def parse_patch(text):
         if line.startswith('+++ b/'):
             path = line[6:].rstrip('\n')
             parts = PurePosixPath(path).parts
-            if '..' in parts or path.startswith('/') or parts[0] not in ('backends', 'graphics', 'base'):
+            if '..' in parts or path.startswith('/') or parts[0] not in ('backends', 'graphics', 'base', 'gui'):
                 raise ValueError('Disallowed override path: ' + path)
             files[path] = []
         elif line.startswith('@@ '):
