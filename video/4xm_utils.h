@@ -86,7 +86,7 @@ HuffmanType loadStatistics(const byte *&huff, uint &offset) {
 	return HuffmanType::fromFrequencies(freqs.size(), freqs.data(), symbols.data());
 }
 
-void idct(int16_t block[64], int shift = 6);
+void idct(int16_t block[64], int shift = 6, bool clipSignedByte = false);
 void buildRawMotionTables(int width, Common::Array<int> &fullOffsets, Common::Array<int> &expOffsets);
 void copyRawBlock(uint16 *dst, const uint16 *src, int stride, int width, int height, uint32 mode, int add = 0);
 void readRawCoefficients(RawDeltaReader &reader, int coeffs[3][64]);

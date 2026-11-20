@@ -136,7 +136,7 @@ RGB<int32> staticYCbCrToF16(YCbCr<int16> y) {
 	return {base + tables.red[cr], base + tables.greenCb[cb] + tables.greenCr[cr], base + tables.blue[cb]};
 }
 
-void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64]) {
+void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64], bool v2) {
 	int32 r[64], g[64], b[64];
 	for (int i = 0; i < 64; ++i) {
 		auto color = YCbCrToF16({block[0][i], block[1][i], block[2][i]});
@@ -157,6 +157,9 @@ void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 bl
 			b[index] = CLIP<int32>(b[index], 0, 0xff0000);
 
 			dstPixels[y * dstPitch + x] = ((r[index] >> 8) & 0xf800) | ((g[index] >> 13) & 0x07e0) | ((b[index] >> 19) & 0x001f);
+			// The original never diffuses pixel 7, even on reverse rows.
+			if (!v2 && x == 7)
+				continue;
 
 			const auto redError = static_cast<int32>(r[index] - (r[index] & 0xfff80000));
 			const auto greenError = static_cast<int32>(g[index] - (g[index] & 0xfffc0000));
@@ -172,7 +175,8 @@ void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 bl
 				if (x < 7)
 					spread(index + 1, 7);
 				if (y < 7) {
-					if (x > 0)
+					// At x == 0 this reaches pixel 7 of the current row.
+					if (!v2 || x > 0)
 						spread(index + 7, 3);
 					spread(index + 8, 5);
 					if (x < 7)
@@ -302,7 +306,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 				}
 			}
 
-			SceneDecoder::idct(ac, hasAC);
+			SceneDecoder::idct(ac, hasAC, !v2);
 		}
 	};
 
@@ -434,7 +438,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 		} break;
 		case 2: {
 			if (dither) {
-				putRGB565DitheredBlock(pic, dstX, dstY, block);
+				putRGB565DitheredBlock(pic, dstX, dstY, block, v2);
 			} else {
 				for (unsigned y = 0; y < 8; ++y) {
 					uint16 *dst = static_cast<uint16 *>(pic.getBasePtr(dstX, dstY + y));
@@ -745,7 +749,7 @@ Cube toCube(float x, float y, float z, bool v2) {
 
 } // namespace
 
-void VR::Animation::Frame::render(Graphics::Surface &pic) const {
+void VR::Animation::Frame::render(Graphics::Surface &pic, bool v2) const {
 	if (blockData.empty())
 		return;
 	const auto *data = blockData.data();
@@ -766,7 +770,7 @@ void VR::Animation::Frame::render(Graphics::Surface &pic) const {
 	auto dcOffset = READ_LE_UINT32(data + offset + huffSize);
 	auto *dcPtr = data + offset + huffSize + 8 + dcOffset;
 	auto *dcEnd = data + blockData.size();
-	unpack(pic, data + offset, huffSize, acPtr, dcPtr - acPtr, dcPtr, dcEnd - dcPtr, quality, &prefixData);
+	unpack(pic, data + offset, huffSize, acPtr, dcPtr - acPtr, dcPtr, dcEnd - dcPtr, quality, &prefixData, v2);
 }
 
 void VR::playAnimation(const Common::String &name, const Common::String &variable, int value, float speed) {
@@ -785,7 +789,7 @@ void VR::playAnimation(const Common::String &name, const Common::String &variabl
 	animation.speed = speed;
 	animation.variable = variable;
 	animation.variableValue = value;
-	animation.renderNextFrame(*_pic->surfacePtr());
+	animation.renderNextFrame(*_pic->surfacePtr(), _v2);
 	_gpuDirty = true;
 	if (animation.speed == 0)
 		g_engine->setVariable(variable, value);
@@ -808,10 +812,10 @@ void VR::stopAnimation(const Common::String &name) {
 	}
 }
 
-void VR::Animation::renderNextFrame(Graphics::Surface &pic) {
+void VR::Animation::renderNextFrame(Graphics::Surface &pic, bool v2) {
 	assert(active);
 	if (frameIndex < frames.size()) {
-		frames[frameIndex++].render(pic);
+		frames[frameIndex++].render(pic, v2);
 	}
 	if (frameIndex >= frames.size()) {
 		if (!stopRequested && restartAtFrame >= 0 && restartAtFrame < static_cast<int>(frames.size())) {
@@ -825,14 +829,14 @@ void VR::Animation::renderNextFrame(Graphics::Surface &pic) {
 	}
 }
 
-bool VR::Animation::render(Graphics::Surface &pic, float dt) {
+bool VR::Animation::render(Graphics::Surface &pic, float dt, bool v2) {
 	if (!active)
 		return false;
 
 	t += speed * dt;
 	if (t >= 1) {
 		t = fmodf(t, 1);
-		renderNextFrame(pic);
+		renderNextFrame(pic, v2);
 		return true;
 	}
 	return false;
@@ -1015,7 +1019,7 @@ void VR::render(Renderer *renderer, float ax, float ay, float fov, float dt, Reg
 	}
 
 	for (auto &animation : _animations)
-		if (animation.render(*_pic->surfacePtr(), dt))
+		if (animation.render(*_pic->surfacePtr(), dt, _v2))
 			_gpuDirty = true;
 
 	if (!_vr) {

@@ -37,16 +37,16 @@ inline uint32 reverseBits(uint32 value, unsigned n) {
 	return n ? Common::REVERSEBITS(value) >> (32 - n) : 0;
 }
 
-inline void idct(int16 *block, bool hasAC) {
+inline void idct(int16 *block, bool hasAC, bool nativeV1) {
 	if (hasAC) {
 #ifdef SCUMMVM_NEON
 		if (SceneNEON::available())
-			SceneNEON::neonIDCT(block, 4);
+			SceneNEON::neonIDCT(block, 4, nativeV1);
 		else
 #endif
-			Video::FourXM::idct(block, 4);
+			Video::FourXM::idct(block, 4, nativeV1);
 	} else
-		Common::fill(block, block + 64, static_cast<int16>(block[0] >> 4));
+		Common::fill(block, block + 64, static_cast<int16>(nativeV1 ? CLIP<int>(block[0] / 16, -128, 127) : block[0] >> 4));
 }
 
 } // namespace SceneDecoder

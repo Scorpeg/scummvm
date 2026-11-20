@@ -34,7 +34,7 @@ inline bool available() {
 	return supported;
 }
 
-void neonIDCT(int16_t *block, int shift);
+void neonIDCT(int16_t *block, int shift, bool nativeV1);
 void ditherBandNEON(int32_t *band, int32_t *next, uint16_t *pixels, int width, int pitch);
 void mipHalfNEON(const uint8_t *src, uint8_t *dst, unsigned size, unsigned bias);
 

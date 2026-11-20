@@ -42,7 +42,7 @@ class VR {
 	struct Animation {
 		struct Frame {
 			Common::Array<byte> blockData;
-			void render(Graphics::Surface &pic) const;
+			void render(Graphics::Surface &pic, bool v2) const;
 		};
 
 		Common::String name;
@@ -58,8 +58,8 @@ class VR {
 
 		Common::String variable;
 		int variableValue = 0;
-		void renderNextFrame(Graphics::Surface &pic);
-		bool render(Graphics::Surface &pic, float dt);
+		void renderNextFrame(Graphics::Surface &pic, bool v2);
+		bool render(Graphics::Surface &pic, float dt, bool v2);
 	};
 	Common::Array<Animation> _animations;
 	float _hint = 0;

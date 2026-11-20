@@ -83,7 +83,7 @@ static inline void transposeIDCT(int32x4_t *v) {
 	v[3] = vcombine_s32(vget_high_s32(a.val[1]), vget_high_s32(b.val[1]));
 }
 
-void neonIDCT(int16_t *block, int shift) {
+void neonIDCT(int16_t *block, int shift, bool nativeV1) {
 	int32_t temp[64];
 	int32x4_t v[8];
 	for (int column = 0; column < 8; column += 4) {
@@ -104,8 +104,17 @@ void neonIDCT(int16_t *block, int shift) {
 		transposeIDCT(v);
 		transposeIDCT(v + 4);
 		for (int i = 0; i < 4; ++i) {
-			vst1_s16(block + (row + i) * 8, vmovn_s32(vshlq_s32(v[i], vdupq_n_s32(-shift))));
-			vst1_s16(block + (row + i) * 8 + 4, vmovn_s32(vshlq_s32(v[i + 4], vdupq_n_s32(-shift))));
+			for (int j = 0; j < 2; ++j) {
+				int32x4_t value = v[i + j * 4];
+				if (nativeV1) {
+					const int32x4_t bias = vandq_s32(vshrq_n_s32(value, 31), vdupq_n_s32((1 << shift) - 1));
+					value = vaddq_s32(value, bias);
+				}
+				value = vshlq_s32(value, vdupq_n_s32(-shift));
+				if (nativeV1)
+					value = vmaxq_s32(vdupq_n_s32(-128), vminq_s32(vdupq_n_s32(127), value));
+				vst1_s16(block + (row + i) * 8 + j * 4, vmovn_s32(value));
+			}
 		}
 	}
 }
