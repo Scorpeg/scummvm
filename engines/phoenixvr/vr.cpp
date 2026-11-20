@@ -320,7 +320,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					for (int x = 0; x < 8; ++x) {
 						const int index = y * 8 + x;
 						int32 *dst = band.data() + (y * pic.w + dstX + x) * 4;
-						auto rgb = YCbCrToF16({block[0][index], block[1][index], block[2][index]}).clipped(-0x1000000, 0xff0000);
+						auto rgb = v2 ? YCbCrToF16({block[0][index], block[1][index], block[2][index]}).clipped(-0x1000000, 0xff0000) : staticYCbCrToF16({block[0][index], block[1][index], block[2][index]});
 						dst[0] += rgb.r;
 						dst[1] += rgb.g;
 						dst[2] += rgb.b;
