@@ -116,6 +116,26 @@ RGB<int32> YCbCrToF16(YCbCr<int16> y) {
 	return RGB<int32>::fromYCbCr(y).multiplied(65536);
 }
 
+RGB<int32> staticYCbCrToF16(YCbCr<int16> y) {
+	struct Tables {
+		int32 red[256], greenCb[256], greenCr[256], blue[256];
+		Tables() {
+			for (int i = 0; i < 256; ++i) {
+				const int c = i - 128;
+				red[i] = static_cast<int32>(c * 91881.472);
+				greenCb[i] = static_cast<int32>(c * -22553.55904);
+				greenCr[i] = static_cast<int32>(c * -46801.87904);
+				blue[i] = static_cast<int32>(c * 116129.792);
+			}
+		}
+	};
+	static const Tables tables;
+	const int32 base = (CLIP<int>(y.y, -128, 127) + 128) * 65536;
+	const int cb = CLIP<int>(y.cb, -128, 127) + 128;
+	const int cr = CLIP<int>(y.cr, -128, 127) + 128;
+	return {base + tables.red[cr], base + tables.greenCb[cb] + tables.greenCr[cr], base + tables.blue[cb]};
+}
+
 void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64]) {
 	int32 r[64], g[64], b[64];
 	for (int i = 0; i < 64; ++i) {
@@ -240,7 +260,7 @@ struct Quantisation {
 	}
 };
 
-void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte *acPtr, uint acSize, const byte *dcPtr, uint dcSize, int quality, const Common::Array<uint32> *prefix = nullptr) {
+void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte *acPtr, uint acSize, const byte *dcPtr, uint dcSize, int quality, const Common::Array<uint32> *prefix = nullptr, bool v2 = false) {
 	const bool dither = !ConfMan.hasKey("phoenixvr_disable_dithering") || !ConfMan.getBool("phoenixvr_disable_dithering");
 	Quantisation quant(quality);
 
@@ -329,7 +349,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					for (int x = 0; x < 8; ++x) {
 						const int src = y * 8 + x;
 						const int dst = y * pic.w + dstX + x;
-						auto rgb = YCbCrToF16({block[0][src], block[1][src], block[2][src]});
+						auto rgb = v2 ? YCbCrToF16({block[0][src], block[1][src], block[2][src]}) : staticYCbCrToF16({block[0][src], block[1][src], block[2][src]});
 						red[dst] += rgb.r;
 						green[dst] += rgb.g;
 						blue[dst] += rgb.b;
@@ -346,6 +366,8 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 					blue[index] = CLIP<int32>(blue[index], 0, 0xff0000);
 
 					dstPixels[x] = ((red[index] >> 8) & 0xf800) | ((green[index] >> 13) & 0x07e0) | ((blue[index] >> 19) & 0x001f);
+					if (!v2 && x == pic.w - 1)
+						continue;
 
 					const int32 redError = (red[index] - (red[index] & 0xf80000)) >> 1;
 					const int32 greenError = (green[index] - (green[index] & 0xfc0000)) >> 1;
@@ -579,7 +601,7 @@ VR VR::loadStatic(const Graphics::PixelFormat &format, Common::SeekableReadStrea
 			auto dcOffset = READ_LE_UINT32(huff + huffSize);
 			auto *dcPtr = acPtr + 4 + dcOffset;
 			auto *dcEnd = vrData.data() + vrData.size();
-			unpack(*pic->surfacePtr(), huff, huffSize, acPtr, dcPtr - acPtr, dcPtr, dcEnd - dcPtr, quality);
+			unpack(*pic->surfacePtr(), huff, huffSize, acPtr, dcPtr - acPtr, dcPtr, dcEnd - dcPtr, quality, nullptr, vr._v2);
 			if (pic3d) {
 				fixRightBottomPixels(*pic, vr._v2);
 			}
@@ -931,12 +953,20 @@ void VR::renderVR(Renderer *renderer, float ax, float ay, float fov, float dt, R
 
 		for (int dstX = 0; dstX != w; ++dstX, ray += incrementX, ++dst) {
 			auto cube = toCube(ray.x(), ray.y(), ray.z(), _v2);
-			int srcX = static_cast<int>(kVRFaceSize * cube.x);
-			int srcY = static_cast<int>(kVRFaceSize * cube.y);
+			const float faceX = kVRFaceSize * cube.x;
+			const float faceY = kVRFaceSize * cube.y;
+			int srcX = static_cast<int>(faceX);
+			int srcY = static_cast<int>(faceY);
 			int tileId = cube.faceIdx << 2;
 			tileId += (srcY < kVRTileSize) ? (srcX < kVRTileSize ? 0 : 1) : (srcX < kVRTileSize ? 3 : 2);
-			srcX &= kVRTileSize - 1;
-			srcY &= kVRTileSize - 1;
+			if (_v2) {
+				srcX &= kVRTileSize - 1;
+				srcY &= kVRTileSize - 1;
+			} else {
+				// Native v1 polygons map each tile from 0.5 to 254.5 texels.
+				srcX = static_cast<int>(0.5f + (faceX - (srcX >= kVRTileSize ? kVRTileSize : 0)) * (254.0f / kVRTileSize));
+				srcY = static_cast<int>(0.5f + (faceY - (srcY >= kVRTileSize ? kVRTileSize : 0)) * (254.0f / kVRTileSize));
+			}
 			srcY += (tileId << 8);
 			auto color = _pic->getPixel(srcX, srcY);
 			if (regSet && showWaves) {
