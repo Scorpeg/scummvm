@@ -37,13 +37,13 @@ struct CubeRequest {
 
 class CubeRenderer {
 	unsigned _uploadProgram, _uploadTexture, _uploadFramebuffer;
-	int _sourceXLocation, _sourceYLocation, _bgraLocation;
+	int _sourceXLocation, _sourceYLocation, _bgraLocation, _tileInsetLocation;
 	unsigned _program, _cube, _framebuffer, _output, _vertices;
 	unsigned _width, _height;
 	int _originLocation, _stepXLocation, _stepYLocation;
 	const void *_source;
 	unsigned _sourceBpp;
-	bool _version2, _sourceBgra, _failed, _announced;
+	bool _version2, _sourceBgra, _sourceTileInset, _failed, _announced;
 	size_t _sourcePitch;
 	float _view[9];
 	bool _viewValid, _viewFilter;

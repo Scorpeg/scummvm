@@ -115,9 +115,9 @@ GLuint createProgram(const char *vertex, const char *fragment) {
 } // namespace
 
 CubeRenderer::CubeRenderer() : _uploadProgram(0), _uploadTexture(0), _uploadFramebuffer(0),
-							   _sourceXLocation(-1), _sourceYLocation(-1), _bgraLocation(-1), _program(0), _cube(0), _framebuffer(0), _output(0), _vertices(0), _width(0), _height(0),
+							   _sourceXLocation(-1), _sourceYLocation(-1), _bgraLocation(-1), _tileInsetLocation(-1), _program(0), _cube(0), _framebuffer(0), _output(0), _vertices(0), _width(0), _height(0),
 							   _originLocation(-1), _stepXLocation(-1), _stepYLocation(-1), _source(nullptr),
-							   _sourceBpp(0), _version2(false), _sourceBgra(false), _failed(false), _announced(false), _sourcePitch(0),
+							   _sourceBpp(0), _version2(false), _sourceBgra(false), _sourceTileInset(false), _failed(false), _announced(false), _sourcePitch(0),
 							   _viewValid(false), _viewFilter(false),
 							   _mipmapsValid(false), _filterValid(false), _filterLinear(false), _filterMipmaps(false), _filterAnisotropy(false) {}
 
@@ -199,13 +199,15 @@ bool CubeRenderer::initialize() {
 		"#else\nprecision mediump float;\n#endif\n#endif\n"
 		"uniform sampler2D tiles;\n"
 		"uniform vec3 sourceX, sourceY;\n"
-		"uniform float bgra;\n"
+		"uniform float bgra, tileInset;\n"
 		"void main() {\n"
 		" vec3 pixel = vec3(floor(gl_FragCoord.xy), 1.0);\n"
 		" vec2 p = vec2(dot(pixel, sourceX), dot(pixel, sourceY));\n"
 		" vec2 quadrant = step(vec2(256.0), p);\n"
 		" float tile = mix(quadrant.x, 3.0 - quadrant.x, quadrant.y);\n"
-		" vec2 uv = (mod(p, 256.0) + vec2(0.5, tile * 256.0 + 0.5)) / vec2(256.0, 1024.0);\n"
+		" vec2 samplePixel = mod(p, 256.0);\n"
+		" samplePixel = mix(samplePixel, floor(0.5 + samplePixel * (254.0 / 256.0)), tileInset);\n"
+		" vec2 uv = (samplePixel + vec2(0.5, tile * 256.0 + 0.5)) / vec2(256.0, 1024.0);\n"
 		" vec3 color = texture2D(tiles, uv).rgb;\n"
 		" gl_FragColor = vec4(mix(color, color.bgr, bgra), 1.0);\n"
 		"}\n";
@@ -215,7 +217,8 @@ bool CubeRenderer::initialize() {
 	_sourceXLocation = glGetUniformLocation(_uploadProgram, "sourceX");
 	_sourceYLocation = glGetUniformLocation(_uploadProgram, "sourceY");
 	_bgraLocation = glGetUniformLocation(_uploadProgram, "bgra");
-	if (_sourceXLocation < 0 || _sourceYLocation < 0 || _bgraLocation < 0)
+	_tileInsetLocation = glGetUniformLocation(_uploadProgram, "tileInset");
+	if (_sourceXLocation < 0 || _sourceYLocation < 0 || _bgraLocation < 0 || _tileInsetLocation < 0)
 		return false;
 	glUseProgram(_uploadProgram);
 	glUniform1i(glGetUniformLocation(_uploadProgram, "tiles"), 0);
@@ -251,6 +254,8 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	glViewport(0, 0, 512, 512);
 	glUseProgram(_uploadProgram);
 	glUniform1f(_bgraLocation, r.sourceBpp == 4 && r.sourceBgra ? 1.0f : 0.0f);
+	// Approximate the original v1 tile inset for nearest sampling only.
+	glUniform1f(_tileInsetLocation, !r.version2 && !r.filter ? 1.0f : 0.0f);
 	glBindBuffer(GL_ARRAY_BUFFER, _vertices);
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
@@ -291,6 +296,7 @@ bool CubeRenderer::upload(const CubeRequest &r) {
 	_sourceBpp = r.sourceBpp;
 	_version2 = r.version2;
 	_sourceBgra = r.sourceBgra;
+	_sourceTileInset = !r.version2 && !r.filter;
 	_sourcePitch = r.sourcePitch;
 	return true;
 }
@@ -360,7 +366,8 @@ bool CubeRenderer::render(const CubeRequest &r, unsigned targetFramebuffer) {
 		return false;
 	const bool uploadNeeded = r.dirty || r.source != _source || r.sourceBpp != _sourceBpp ||
 							  r.version2 != _version2 ||
-							  r.sourceBgra != _sourceBgra || r.sourcePitch != _sourcePitch;
+							  r.sourceBgra != _sourceBgra || r.sourcePitch != _sourcePitch ||
+							  (!r.version2 && !r.filter) != _sourceTileInset;
 	float view[9];
 	memcpy(view, r.origin, sizeof(r.origin));
 	memcpy(view + 3, r.stepX, sizeof(r.stepX));
