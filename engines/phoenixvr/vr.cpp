@@ -136,7 +136,7 @@ RGB<int32> staticYCbCrToF16(YCbCr<int16> y) {
 	return {base + tables.red[cr], base + tables.greenCb[cb] + tables.greenCr[cr], base + tables.blue[cb]};
 }
 
-void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64], bool v2) {
+void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 block[3][64]) {
 	int32 r[64], g[64], b[64];
 	for (int i = 0; i < 64; ++i) {
 		auto color = YCbCrToF16({block[0][i], block[1][i], block[2][i]});
@@ -158,7 +158,7 @@ void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 bl
 
 			dstPixels[y * dstPitch + x] = ((r[index] >> 8) & 0xf800) | ((g[index] >> 13) & 0x07e0) | ((b[index] >> 19) & 0x001f);
 			// The original never diffuses pixel 7, even on reverse rows.
-			if (!v2 && x == 7)
+			if (x == 7)
 				continue;
 
 			const auto redError = static_cast<int32>(r[index] - (r[index] & 0xfff80000));
@@ -176,8 +176,7 @@ void putRGB565DitheredBlock(Graphics::Surface &pic, int dstX, int dstY, int16 bl
 					spread(index + 1, 7);
 				if (y < 7) {
 					// At x == 0 this reaches pixel 7 of the current row.
-					if (!v2 || x > 0)
-						spread(index + 7, 3);
+					spread(index + 7, 3);
 					spread(index + 8, 5);
 					if (x < 7)
 						spread(index + 9, 1);
@@ -438,7 +437,7 @@ void unpack(Graphics::Surface &pic, const byte *huff, uint huffSize, const byte 
 		} break;
 		case 2: {
 			if (dither) {
-				putRGB565DitheredBlock(pic, dstX, dstY, block, v2);
+				putRGB565DitheredBlock(pic, dstX, dstY, block);
 			} else {
 				for (unsigned y = 0; y < 8; ++y) {
 					uint16 *dst = static_cast<uint16 *>(pic.getBasePtr(dstX, dstY + y));
